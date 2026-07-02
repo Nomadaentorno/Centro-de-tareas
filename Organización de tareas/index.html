@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Organizador semanal de tareas</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@300;400;500;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <section id="accessShell" class="access-shell"></section>
+
+    <section id="calendarHubShell" class="calendar-hub-shell hidden">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Panel de coordinacion</p>
+          <h1>Meses y calendarios</h1>
+        </div>
+        <div class="topbar-actions">
+          <span class="topbar-stat" id="hubSessionStats">Coordinador</span>
+          <button class="ghost-button" id="hubLogoutButton" type="button">Salir</button>
+        </div>
+      </header>
+      <main class="calendar-hub">
+        <section class="hub-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Organizacion temporal</p>
+              <h2>Meses</h2>
+            </div>
+            <span class="counter" id="hubCalendarCount">0 calendarios</span>
+          </div>
+          <form id="hubMonthForm" class="month-form">
+            <input id="hubMonthName" type="text" maxlength="45" placeholder="Nombre del mes" />
+            <button class="icon-button" type="submit" title="Agregar mes">+</button>
+          </form>
+          <section id="accessRequestsPanel" class="requests-panel hidden">
+            <div class="section-heading">
+              <h2>Solicitudes de acceso</h2>
+              <span class="counter" id="accessRequestCount">0</span>
+            </div>
+            <div id="accessRequestList" class="people-list"></div>
+          </section>
+          <section class="hub-subpanel">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Accesos</p>
+                <h2>Colaboradores y coordinadores</h2>
+              </div>
+              <span class="counter" id="teamCount">0</span>
+            </div>
+            <form id="personForm" class="person-form hub-person-form">
+              <input id="personName" type="text" maxlength="45" required placeholder="Nombre" />
+              <input id="personPassword" type="password" maxlength="45" placeholder="Clave inicial" />
+              <select id="personRole">
+                <option value="collaborator">Colaborador</option>
+                <option value="coordinator">Coordinador</option>
+              </select>
+              <button class="icon-button" type="submit" title="Agregar perfil">+</button>
+            </form>
+            <div id="peopleList" class="people-list"></div>
+          </section>
+          <div id="hubCalendarAdminList" class="calendar-admin-list hub-calendar-admin-list"></div>
+          <section class="hub-subpanel">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Biblioteca del calendario actual</p>
+                <h2>Supertareas guardadas</h2>
+              </div>
+              <span class="counter" id="hubSavedSupertaskCount">0</span>
+            </div>
+            <div id="hubSavedSupertaskList" class="hub-saved-supertask-list"></div>
+          </section>
+        </section>
+      </main>
+    </section>
+
+    <div id="appShell" class="app-shell hidden">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Gestion semanal</p>
+        <h1>Organizador de tareas</h1>
+      </div>
+      <div class="topbar-actions">
+        <span class="topbar-stat" id="supertaskStats">0 supertareas - 0%</span>
+        <span class="topbar-stat" id="sessionStats">Sin sesion</span>
+        <button class="ghost-button" id="seedButton" type="button" title="Cargar ejemplo">Ejemplo</button>
+        <button class="danger-button" id="resetButton" type="button" title="Limpiar datos">Limpiar</button>
+        <button class="ghost-button coordinator-only" id="backToHubButton" type="button" title="Volver a calendarios">Calendarios</button>
+        <button class="ghost-button hidden" id="changePasswordButton" type="button" title="Cambiar clave">Cambiar clave</button>
+        <button class="ghost-button" id="logoutButton" type="button" title="Cerrar sesion">Salir</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="coordinator-panel" aria-label="Panel de coordinacion">
+        <section class="panel-section">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Ingreso</p>
+              <h2>Coordinacion</h2>
+            </div>
+            <span class="counter" id="totalTasks">0 tareas</span>
+          </div>
+
+          <form id="taskForm" class="task-form">
+            <div class="segmented" role="group" aria-label="Tipo de tarea">
+              <label>
+                <input type="radio" name="taskType" value="task" checked />
+                <span>Tarea</span>
+              </label>
+              <label>
+                <input type="radio" name="taskType" value="supertask" />
+                <span>Supertarea</span>
+              </label>
+            </div>
+
+            <label>
+              Nombre
+              <input id="taskTitle" name="title" type="text" maxlength="90" required placeholder="Nombre de la tarea" />
+            </label>
+
+            <label>
+              Detalle
+              <textarea id="taskDetail" name="detail" maxlength="260" rows="3" placeholder="Notas breves"></textarea>
+            </label>
+
+            <div id="subtaskGroup" class="subtask-group hidden">
+              <div class="subtask-heading">
+                <span>Tareas internas</span>
+                <button class="small-button" id="addSubtaskRow" type="button">Agregar interna</button>
+              </div>
+              <div id="subtaskRows" class="subtask-rows"></div>
+            </div>
+
+            <div class="form-grid">
+              <label id="taskAssigneeWrap">
+                Responsable
+                <select id="taskAssignee" name="assignee"></select>
+              </label>
+
+              <label>
+                Ingreso
+                <input id="taskCreatedAt" name="createdAt" type="date" />
+              </label>
+            </div>
+
+            <fieldset class="day-field">
+              <legend>Dia de ingreso</legend>
+              <div class="day-picker">
+                <label>
+                  <input type="radio" name="preferredDay" value="auto" checked />
+                  <span>Auto</span>
+                </label>
+                <label>
+                  <input type="radio" name="preferredDay" value="0" />
+                  <span>Lunes</span>
+                </label>
+                <label>
+                  <input type="radio" name="preferredDay" value="1" />
+                  <span>Martes</span>
+                </label>
+                <label>
+                  <input type="radio" name="preferredDay" value="2" />
+                  <span>Miercoles</span>
+                </label>
+                <label>
+                  <input type="radio" name="preferredDay" value="3" />
+                  <span>Jueves</span>
+                </label>
+                <label>
+                  <input type="radio" name="preferredDay" value="4" />
+                  <span>Viernes</span>
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset class="priority-field">
+              <legend>Prioridad</legend>
+              <label class="priority-option high">
+                <input type="radio" name="priority" value="high" checked />
+                Roja
+              </label>
+              <label class="priority-option medium">
+                <input type="radio" name="priority" value="medium" />
+                Naranja
+              </label>
+              <label class="priority-option normal">
+                <input type="radio" name="priority" value="normal" />
+                Verde
+              </label>
+            </fieldset>
+
+            <label class="checkbox-row">
+              <input id="saveTemplate" name="saveTemplate" type="checkbox" />
+              Guardar tambien en biblioteca
+            </label>
+
+            <button class="primary-button" type="submit">Agregar</button>
+          </form>
+        </section>
+
+        <section class="panel-section coordinator-only hidden" id="calendarAdminSection">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Calendarios</p>
+              <h2>Administracion</h2>
+            </div>
+            <span class="counter" id="calendarCount">0</span>
+          </div>
+          <form id="monthForm" class="month-form">
+            <input id="monthName" type="text" maxlength="45" placeholder="Nombre del mes" />
+            <button class="icon-button" type="submit" title="Agregar mes">+</button>
+          </form>
+          <div id="calendarAdminList" class="calendar-admin-list"></div>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <div class="toolbar">
+          <div class="tabs" role="tablist" aria-label="Vistas">
+            <button class="tab active" data-view="board" id="boardTab" type="button">Semana</button>
+            <button class="tab" data-view="queue" id="queueTab" type="button">Cola</button>
+            <button class="tab" data-view="saved" id="savedTab" type="button">Guardadas</button>
+            <button class="tab" data-view="repository" id="repositoryTab" type="button">Repositorio</button>
+          </div>
+          <div class="legend" aria-label="Prioridades">
+            <span><i class="dot high"></i>Prioritaria</span>
+            <span><i class="dot medium"></i>Semi prioritaria</span>
+            <span><i class="dot normal"></i>Normal</span>
+            <span><i class="dot stale"></i>+1 semana</span>
+          </div>
+        </div>
+
+        <section id="boardView" class="board-view"></section>
+        <section id="queueView" class="queue-view hidden"></section>
+        <section id="savedView" class="saved-view hidden"></section>
+        <section id="repositoryView" class="repository-view hidden"></section>
+      </section>
+    </main>
+
+    <template id="taskCardTemplate">
+      <article class="task-card">
+        <div class="task-card-main">
+          <strong class="task-title"></strong>
+          <p class="task-detail"></p>
+          <div class="subtask-preview"></div>
+          <div class="task-meta"></div>
+        </div>
+        <div class="task-actions">
+          <button class="small-button complete-action" type="button" title="Marcar terminada">Listo</button>
+          <button class="small-button save-action" type="button" title="Guardar tarea">Guardar</button>
+          <button class="small-button edit-action" type="button" title="Editar tarea">Editar</button>
+          <button class="small-button remove-action" type="button" title="Eliminar tarea">Eliminar</button>
+        </div>
+      </article>
+    </template>
+
+    <dialog id="editDialog" class="edit-dialog">
+      <form id="editForm" method="dialog">
+        <h2>Editar tarea</h2>
+        <input type="hidden" id="editTaskId" />
+        <label>
+          Nombre
+          <input id="editTitle" type="text" maxlength="90" required />
+        </label>
+        <label>
+          Detalle
+          <textarea id="editDetail" maxlength="260" rows="3"></textarea>
+        </label>
+        <label id="editSubtaskWrap">
+          Tareas internas
+          <span class="subtask-hint">Cada interna puede tener responsable y detalle propio.</span>
+          <button class="small-button" id="editAddSubtaskRow" type="button">Agregar interna</button>
+          <div id="editSubtaskRows" class="subtask-rows"></div>
+        </label>
+        <div class="form-grid">
+          <label id="editAssigneeWrap">
+            Responsable
+            <select id="editAssignee"></select>
+          </label>
+          <label>
+            Prioridad
+            <select id="editPriority">
+              <option value="high">Roja</option>
+              <option value="medium">Naranja</option>
+              <option value="normal">Verde</option>
+            </select>
+          </label>
+        </div>
+        <div class="dialog-actions">
+          <button class="ghost-button" value="cancel" type="button" id="cancelEdit">Cancelar</button>
+          <button class="primary-button" value="default" type="submit">Guardar</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="templateDialog" class="edit-dialog">
+      <form id="templateForm" method="dialog">
+        <h2 id="templateDialogTitle">Editar guardada</h2>
+        <input type="hidden" id="templateId" />
+        <div class="segmented hidden" id="templateTypeChooser" role="group" aria-label="Tipo guardado">
+          <label>
+            <input type="radio" name="templateType" value="task" />
+            <span>Tarea</span>
+          </label>
+          <label>
+            <input type="radio" name="templateType" value="supertask" />
+            <span>Supertarea</span>
+          </label>
+        </div>
+        <label>
+          Nombre
+          <input id="templateTitle" type="text" maxlength="90" required />
+        </label>
+        <label>
+          Detalle
+          <textarea id="templateDetail" maxlength="260" rows="3"></textarea>
+        </label>
+        <label id="templateSubtaskWrap">
+          Tareas internas
+          <span class="subtask-hint">Se guardan como parte de la supertarea.</span>
+          <button class="small-button" id="templateAddSubtaskRow" type="button">Agregar interna</button>
+          <div id="templateSubtaskRows" class="subtask-rows"></div>
+        </label>
+        <label>
+          Prioridad
+          <select id="templatePriority">
+            <option value="high">Roja</option>
+            <option value="medium">Naranja</option>
+            <option value="normal">Verde</option>
+          </select>
+        </label>
+        <div class="dialog-actions">
+          <button class="ghost-button" value="cancel" type="button" id="cancelTemplateEdit">Cancelar</button>
+          <button class="primary-button" value="default" type="submit">Guardar cambios</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="repositoryEditDialog" class="edit-dialog">
+      <form id="repositoryEditForm" method="dialog">
+        <h2>Editar tarea del repositorio</h2>
+        <input type="hidden" id="repositoryEditId" />
+        <label>
+          Nombre
+          <input id="repositoryEditTitle" type="text" maxlength="90" required />
+        </label>
+        <label>
+          Detalle
+          <textarea id="repositoryEditDetail" maxlength="260" rows="3"></textarea>
+        </label>
+        <div class="form-grid">
+          <label>
+            Responsable
+            <select id="repositoryEditAssignee"></select>
+          </label>
+          <label>
+            Prioridad
+            <select id="repositoryEditPriority">
+              <option value="high">Roja</option>
+              <option value="medium">Naranja</option>
+              <option value="normal">Verde</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          Dia al reabrir
+          <select id="repositoryEditDay">
+            <option value="auto">Auto</option>
+            <option value="0">Lunes</option>
+            <option value="1">Martes</option>
+            <option value="2">Miercoles</option>
+            <option value="3">Jueves</option>
+            <option value="4">Viernes</option>
+          </select>
+        </label>
+        <div class="dialog-actions">
+          <button class="ghost-button" value="cancel" type="button" id="cancelRepositoryEdit">Cancelar</button>
+          <button class="ghost-button" value="default" type="submit">Guardar</button>
+          <button class="primary-button" type="button" id="reopenRepositoryTask">Reabrir al calendario</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="supertaskManagerDialog" class="edit-dialog supertask-dialog">
+      <form id="supertaskManagerForm" method="dialog">
+        <input type="hidden" id="supertaskManagerId" />
+        <div class="supertask-dialog-header">
+          <div>
+            <p class="eyebrow">Supertarea</p>
+            <h2 id="supertaskManagerTitle">Editar supertarea</h2>
+          </div>
+          <button class="small-button" id="supertaskAddInternal" type="button">Agregar interna</button>
+        </div>
+        <label>
+          Nombre de la supertarea
+          <input id="supertaskManagerName" type="text" maxlength="90" required />
+        </label>
+        <label>
+          Detalle de la supertarea
+          <textarea id="supertaskManagerDetail" maxlength="260" rows="3"></textarea>
+        </label>
+        <label>
+          Prioridad general
+          <select id="supertaskManagerPriority">
+            <option value="high">Roja</option>
+            <option value="medium">Naranja</option>
+            <option value="normal">Verde</option>
+          </select>
+        </label>
+        <div id="supertaskManagerRows" class="subtask-rows supertask-manager-rows"></div>
+        <div class="dialog-actions">
+          <button class="ghost-button" value="cancel" type="button" id="cancelSupertaskManager">Cancelar</button>
+          <button class="primary-button" value="default" type="submit">Guardar y reubicar</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="hubDetailDialog" class="edit-dialog hub-detail-dialog">
+      <form id="hubDetailForm" method="dialog">
+        <div class="supertask-dialog-header">
+          <div>
+            <p class="eyebrow" id="hubDetailEyebrow">Calendario</p>
+            <h2 id="hubDetailTitle">Detalle</h2>
+          </div>
+          <button class="ghost-button" id="closeHubDetail" type="button">Cerrar</button>
+        </div>
+        <div id="hubDetailContent" class="hub-detail-content"></div>
+      </form>
+    </dialog>
+
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
