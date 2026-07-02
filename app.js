@@ -37,11 +37,15 @@ const MAX_PER_DAY = 6;
 const STALE_DAYS = 7;
 const COMPLETE_ANIMATION_MS = 430;
 const RESET_CONFIRM_MS = 3500;
+const UNDO_LIMIT = 10;
 
 CLEANUP_KEYS.forEach((key) => localStorage.removeItem(key));
 
 const state = normalizeState(loadState());
 attachCalendarAccessors(state);
+const undoStack = [];
+let lastSavedSnapshot = serializeState();
+let restoringUndo = false;
 let templateEditCalendarId = "";
 let templateEditReturnToHub = false;
 let resetConfirmTimer = null;
@@ -217,6 +221,13 @@ function bindEvents() {
   elements.hubMonthForm.addEventListener("submit", (event) => {
     event.preventDefault();
     createMonthFromInput(elements.hubMonthName, false);
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !event.shiftKey) {
+      event.preventDefault();
+      undoLastChange();
+    }
   });
 
   elements.tabs.forEach((tab) => {
@@ -862,6 +873,7 @@ function renderCalendarHub() {
     const addCalendar = actionButton("Calendario +", () => addCalendarToMonth(month.id));
     const upMonth = actionButton("Subir", () => moveMonth(month.id, -1));
     const downMonth = actionButton("Bajar", () => moveMonth(month.id, 1));
+    const removeMonth = actionButton("Eliminar mes", () => deleteMonth(month.id), "remove-template");
     const color = document.createElement("input");
     color.type = "color";
     color.className = "month-color-input";
@@ -875,7 +887,7 @@ function renderCalendarHub() {
     const monthStats = document.createElement("span");
     monthStats.className = "counter";
     monthStats.textContent = getMonthProgressText(month.id);
-    header.append(input, color, monthStats, addCalendar, upMonth, downMonth);
+    header.append(input, color, monthStats, addCalendar, upMonth, downMonth, removeMonth);
     card.style.borderColor = month.color || getPastelColor(month.order);
     card.style.background = `${month.color || getPastelColor(month.order)}33`;
     card.appendChild(header);
@@ -1363,7 +1375,7 @@ function deleteCalendar(calendarId) {
     alert("Debe existir al menos un calendario.");
     return;
   }
-  if (!confirm(`Deseas eliminar el calendario "${calendar.name}"? Esta accion no se puede deshacer.`)) return;
+  if (!confirm(`Deseas eliminar el calendario "${calendar.name}"?`)) return;
   const monthId = calendar.monthId;
   state.calendars = state.calendars.filter((item) => item.id !== calendarId);
   const fallbackCalendar = state.calendars.find((item) => item.monthId === monthId) || state.calendars[0];
@@ -1381,6 +1393,41 @@ function deleteCalendar(calendarId) {
     .forEach((item, index) => {
       item.order = index;
     });
+  saveState();
+  renderCalendarHub();
+}
+
+function deleteMonth(monthId) {
+  const month = state.months.find((item) => item.id === monthId);
+  if (!month) return;
+  if (state.months.length <= 1) {
+    alert("Debe existir al menos un mes.");
+    return;
+  }
+  const calendarsToDelete = state.calendars.filter((calendar) => calendar.monthId === monthId);
+  const calendarCount = calendarsToDelete.length;
+  const suffix = calendarCount
+    ? ` Tambien se eliminaran ${calendarCount} calendario${calendarCount === 1 ? "" : "s"} y sus tareas.`
+    : "";
+  if (!confirm(`Deseas eliminar el mes "${month.name}"?${suffix}`)) return;
+
+  const deletedCalendarIds = new Set(calendarsToDelete.map((calendar) => calendar.id));
+  state.months = state.months.filter((item) => item.id !== monthId);
+  state.months
+    .sort((a, b) => a.order - b.order)
+    .forEach((item, index) => {
+      item.order = index;
+    });
+  state.calendars = state.calendars.filter((calendar) => !deletedCalendarIds.has(calendar.id));
+
+  const fallbackCalendar = state.calendars.find((calendar) => calendar.isCurrent) || state.calendars[0];
+  if (fallbackCalendar && (deletedCalendarIds.has(state.activeCalendarId) || !state.calendars.some((calendar) => calendar.id === state.activeCalendarId))) {
+    state.activeCalendarId = fallbackCalendar.id;
+  }
+  if (fallbackCalendar && !state.calendars.some((calendar) => calendar.isCurrent)) {
+    fallbackCalendar.isCurrent = true;
+  }
+
   saveState();
   renderCalendarHub();
 }
@@ -2808,12 +2855,42 @@ function showSaveAnimation(message = "Guardado") {
 }
 
 function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({
+  const snapshot = serializeState();
+  if (!restoringUndo && snapshot !== lastSavedSnapshot) {
+    undoStack.push(lastSavedSnapshot);
+    if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  }
+  localStorage.setItem(STORAGE_KEY, snapshot);
+  lastSavedSnapshot = snapshot;
+}
+
+function serializeState() {
+  return JSON.stringify({
     accounts: state.accounts,
     months: state.months,
     calendars: state.calendars,
     activeCalendarId: state.activeCalendarId,
-  }));
+  });
+}
+
+function undoLastChange() {
+  const snapshot = undoStack.pop();
+  if (!snapshot) return;
+  try {
+    const restoredState = normalizeState(JSON.parse(snapshot));
+    restoringUndo = true;
+    state.accounts = restoredState.accounts;
+    state.months = restoredState.months;
+    state.calendars = restoredState.calendars;
+    state.activeCalendarId = restoredState.activeCalendarId;
+    saveState();
+    restoringUndo = false;
+    render();
+    if (!elements.calendarHubShell.classList.contains("hidden")) renderCalendarHub();
+    showSaveAnimation("Cambio deshecho");
+  } catch {
+    restoringUndo = false;
+  }
 }
 
 function loadState() {
