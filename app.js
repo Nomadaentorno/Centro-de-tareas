@@ -1,6 +1,12 @@
-const STORAGE_KEY = "weekly-task-system-v6-supertask-save-clean";
+const IS_LOCAL_AVATAR_PREVIEW = ["127.0.0.1", "localhost"].includes(window.location.hostname)
+  && new URLSearchParams(window.location.search).get("preview") === "avatars";
+const STORAGE_KEY = IS_LOCAL_AVATAR_PREVIEW
+  ? "weekly-task-avatar-preview-v1"
+  : "weekly-task-system-v6-supertask-save-clean";
 const LEGACY_KEYS = [];
-const SESSION_KEY = "weekly-task-session-v4-supertask-save-clean";
+const SESSION_KEY = IS_LOCAL_AVATAR_PREVIEW
+  ? "weekly-task-avatar-preview-session-v1"
+  : "weekly-task-session-v4-supertask-save-clean";
 const CLEANUP_KEYS = [
   "weekly-task-system",
   "weekly-task-system-v1",
@@ -38,6 +44,43 @@ const STALE_DAYS = 7;
 const COMPLETE_ANIMATION_MS = 430;
 const RESET_CONFIRM_MS = 3500;
 const UNDO_LIMIT = 10;
+const COMPANION_COLORS = ["#39b77a", "#2f7ae5", "#7b61d1", "#e3834b", "#e05270", "#20a6a8", "#e1b936", "#384a61"];
+const COMPANION_SKINS = ["#f7d4b5", "#e8b184", "#ca8259", "#9a5d3e", "#6d402f", "#bdf4d8"];
+const COMPANION_PANTS = ["#2d6353", "#263b63", "#47366c", "#6b4935", "#30343c", "#8b6bb0"];
+const COMPANION_HAIR_COLORS = ["#2a2027", "#51372d", "#8b5a36", "#d3a550", "#d97858", "#805da8", "#3b7180", "#edf0e9"];
+const COMPANION_ACCESSORY_COLORS = ["#735bd0", "#e05270", "#e3834b", "#20a6a8", "#e1b936", "#384a61"];
+const COMPANION_HAIRS = [
+  { id: "short", label: "Corto" },
+  { id: "bob", label: "Bob" },
+  { id: "curly", label: "Rizos" },
+  { id: "ponytail", label: "Coleta" },
+  { id: "spiky", label: "Puntas" },
+  { id: "buzz", label: "Rapado" },
+  { id: "long", label: "Largo" },
+  { id: "wavy", label: "Ondulado" },
+  { id: "braids", label: "Trenzas" },
+  { id: "mullet", label: "Mullet moderno" },
+  { id: "curtain", label: "Cortina" },
+  { id: "mohawk", label: "Mohicano" },
+];
+const COMPANION_OUTFITS = [
+  { id: "hoodie", label: "Poleron" },
+  { id: "jacket", label: "Chaqueta" },
+  { id: "overalls", label: "Overol" },
+  { id: "sweater", label: "Sueter" },
+  { id: "shirt", label: "Camisa" },
+  { id: "vest", label: "Chaleco" },
+];
+const COMPANION_ACCESSORIES = [
+  { id: "none", label: "Sin accesorio" },
+  { id: "cap", label: "Gorra" },
+  { id: "headphones", label: "Audifonos" },
+  { id: "scarf", label: "Bufanda" },
+  { id: "glasses", label: "Lentes" },
+  { id: "beanie", label: "Gorro" },
+  { id: "bow", label: "Lazo" },
+  { id: "backpack", label: "Mochila" },
+];
 
 CLEANUP_KEYS.forEach((key) => localStorage.removeItem(key));
 
@@ -534,6 +577,13 @@ async function initializeApplication() {
   elements.calendarHubShell.classList.add("hidden");
   elements.accessShell.classList.remove("hidden");
   elements.accessShell.replaceChildren(createAccessMessageCard("Conectando", "Preparando el espacio compartido..."));
+  if (IS_LOCAL_AVATAR_PREVIEW) {
+    applyRemoteState(getAvatarPreviewState());
+    localStorage.setItem(SESSION_KEY, "preview-collaborator");
+    cloudReady = false;
+    renderAccessGate();
+    return;
+  }
   if (!window.CloudStore?.available) {
     elements.accessShell.replaceChildren(createAccessMessageCard(
       "Sin conexión",
@@ -1087,11 +1137,274 @@ function render() {
   renderCalendarAdmin();
   updateTaskTypeFields();
   updateRoleAccess();
+  renderTopbarCompanion();
 
   const activeTasks = state.tasks.filter((task) => !task.completed && task.type !== "supertask");
   elements.totalTasks.textContent = `${activeTasks.length} ${activeTasks.length === 1 ? "pendiente" : "pendientes"}`;
   renderSupertaskStats();
   elements.teamCount.textContent = String(state.people.length);
+}
+
+function renderTopbarCompanion() {
+  document.querySelector("#topbarCompanion")?.remove();
+  const user = getCurrentUser();
+  if (!user || user.role !== "collaborator") return;
+  const settings = getCompanionSettings(user);
+  const activity = getCompanionActivity(user.id);
+  const wrap = document.createElement("div");
+  wrap.id = "topbarCompanion";
+  wrap.className = "topbar-companion";
+
+  const launch = document.createElement("button");
+  launch.type = "button";
+  launch.className = "companion-launch";
+  launch.setAttribute("aria-label", `Personalizar apariencia de ${user.name}`);
+  launch.setAttribute("aria-expanded", "false");
+  launch.innerHTML = createCompanionMarkup(settings, activity);
+
+  const popover = document.createElement("section");
+  popover.className = "companion-popover hidden";
+  popover.setAttribute("aria-label", "Opciones de apariencia");
+  const header = document.createElement("div");
+  header.className = "companion-popover-header";
+  header.innerHTML = `<div><p class="eyebrow">Personaje</p><h3>${escapeHtml(user.name)}</h3></div>`;
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "companion-close";
+  close.setAttribute("aria-label", "Cerrar personalizacion");
+  close.textContent = "×";
+  close.addEventListener("click", () => closeCompanionPopover(popover, launch));
+  header.appendChild(close);
+
+  const copy = document.createElement("p");
+  copy.className = "companion-popover-copy";
+  copy.textContent = "Elige su cabello, ropa y accesorios. El personaje conserva siempre tu nombre.";
+  popover.append(header, copy);
+  popover.append(
+    createCompanionOptionGroup(user, "Prenda", "outfit", COMPANION_OUTFITS, settings.outfit),
+    createCompanionColorGroup(user, "Color de prenda", "color", COMPANION_COLORS, settings.color),
+    createCompanionColorGroup(user, "Color de piel", "skin", COMPANION_SKINS, settings.skin),
+    createCompanionOptionGroup(user, "Cabello", "hair", COMPANION_HAIRS, settings.hair),
+    createCompanionColorGroup(user, "Color de cabello", "hairColor", COMPANION_HAIR_COLORS, settings.hairColor),
+    createCompanionColorGroup(user, "Pantalon", "pants", COMPANION_PANTS, settings.pants),
+    createCompanionOptionGroup(user, "Accesorio", "accessory", COMPANION_ACCESSORIES, settings.accessory),
+    createCompanionColorGroup(user, "Color de accesorio", "accessoryColor", COMPANION_ACCESSORY_COLORS, settings.accessoryColor)
+  );
+
+  launch.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const willOpen = popover.classList.contains("hidden");
+    popover.classList.toggle("hidden", !willOpen);
+    launch.setAttribute("aria-expanded", String(willOpen));
+    if (willOpen) {
+      window.setTimeout(() => {
+        document.addEventListener("click", () => closeCompanionPopover(popover, launch), { once: true });
+      }, 0);
+    }
+  });
+  popover.addEventListener("click", (event) => event.stopPropagation());
+  wrap.append(launch, popover);
+  elements.sessionStats.before(wrap);
+}
+
+function createCompanionMarkup(settings, activity = "idle") {
+  const hair = createCompanionHairSvg(settings.hair);
+  const accessory = createCompanionAccessorySvg(settings.accessory);
+  return `
+    <span class="companion-stage activity-${activity}" style="--companion-color:${settings.color};--companion-skin:${settings.skin};--companion-pants:${settings.pants};--companion-hair:${settings.hairColor};--companion-accessory-color:${settings.accessoryColor}" data-outfit="${settings.outfit}" data-accessory="${settings.accessory}" data-hair="${settings.hair}" aria-hidden="true">
+      <svg class="companion-svg" viewBox="0 0 80 96" xmlns="http://www.w3.org/2000/svg" focusable="false">
+        <ellipse class="companion-svg-shadow" cx="40" cy="91" rx="20" ry="4"></ellipse>
+        <g class="companion-figure">
+          ${accessory.behind}
+          ${hair.behind}
+          <g class="companion-legs">
+            <rect class="companion-pants-fill" x="28" y="74" width="11" height="14" rx="5"></rect>
+            <rect class="companion-pants-fill" x="42" y="74" width="11" height="14" rx="5"></rect>
+            <path class="companion-shoe" d="M25 86c0-3 3-5 7-5h6v8H27c-2 0-3-1-2-3Z"></path>
+            <path class="companion-shoe" d="M55 86c0-3-3-5-7-5h-6v8h11c2 0 3-1 2-3Z"></path>
+          </g>
+          <g class="companion-arm-svg left">
+            <path class="companion-outfit-fill" d="M29 59c-5-1-9 3-10 10l-1 8c0 3 2 5 5 5s5-2 5-5l2-10Z"></path>
+            <circle class="companion-skin-fill" cx="22" cy="80" r="5"></circle>
+          </g>
+          <g class="companion-arm-svg right">
+            <path class="companion-outfit-fill" d="M51 59c5-1 9 3 10 10l1 8c0 3-2 5-5 5s-5-2-5-5l-2-10Z"></path>
+            <circle class="companion-skin-fill" cx="58" cy="80" r="5"></circle>
+          </g>
+          <g class="companion-torso-svg">
+            <path class="companion-outfit-fill companion-torso-shape" d="M26 72v-8c0-7 5-11 12-11h4c7 0 12 4 12 11v8c0 3-3 5-7 5H33c-4 0-7-2-7-5Z"></path>
+            <path class="companion-outfit-highlight" d="M31 61c3-4 6-5 10-5"></path>
+            <path class="companion-outfit-seam" d="M40 57v18"></path>
+            <path class="companion-outfit-pocket" d="M43 67h7v6c-2 2-5 2-7 0Z"></path>
+            <path class="companion-overall-bib" d="M32 59h16v16H32Z"></path>
+            <path class="companion-shirt-collar" d="m32 56 8 8 8-8"></path>
+          </g>
+          <g class="companion-pants-svg">
+            <path class="companion-pants-fill companion-pants-waist" d="M28 72h24v6c0 3-2 5-5 5h-4l-3-3-3 3h-4c-3 0-5-2-5-5Z"></path>
+            <path class="companion-pants-detail" d="M30 75h20M40 75v6"></path>
+          </g>
+          <g class="companion-head-svg">
+            <circle class="companion-ear companion-skin-fill left" cx="20" cy="36" r="6"></circle>
+            <circle class="companion-ear companion-skin-fill right" cx="60" cy="36" r="6"></circle>
+            <circle class="companion-ear-inner left" cx="20" cy="36" r="2.5"></circle>
+            <circle class="companion-ear-inner right" cx="60" cy="36" r="2.5"></circle>
+            <rect class="companion-face companion-skin-fill" x="19" y="15" width="42" height="44" rx="19"></rect>
+            ${hair.front}
+            <ellipse class="companion-eye-svg left" cx="31" cy="37" rx="3" ry="4"></ellipse>
+            <ellipse class="companion-eye-svg right" cx="49" cy="37" rx="3" ry="4"></ellipse>
+            <circle class="companion-eye-shine left" cx="30" cy="36" r="1"></circle>
+            <circle class="companion-eye-shine right" cx="48" cy="36" r="1"></circle>
+            <ellipse class="companion-blush left" cx="26" cy="44" rx="4" ry="2"></ellipse>
+            <ellipse class="companion-blush right" cx="54" cy="44" rx="4" ry="2"></ellipse>
+            <path class="companion-nose-svg" d="M40 39v3"></path>
+            <path class="companion-smile-svg" d="M35 47c3 4 7 4 10 0"></path>
+          </g>
+          ${accessory.front}
+        </g>
+      </svg>
+    </span>
+  `;
+}
+
+function createCompanionHairSvg(style) {
+  const scalpCap = `<path class="companion-hair-fill companion-hair-cap" d="M18 34C17 18 27 8 40 8s23 10 22 26c-5-2-8-7-10-12-3 6-8 9-13 9-5 0-8-2-11-7-2 5-5 8-10 10Z"></path>`;
+  const commonFront = `${scalpCap}
+    <path class="companion-hair-highlight" d="M27 20c5-6 12-8 19-5"></path>`;
+  if (style === "bob") return {
+    behind: `<path class="companion-hair-fill companion-hair-back" d="M15 36c0-18 10-29 25-29s25 11 25 29v17c0 7-5 12-12 13l-3-15H30l-3 15c-7-1-12-6-12-13Z"></path>`,
+    front: `${commonFront}<path class="companion-hair-fill companion-side-lock left" d="M20 30c-4 8-3 18 2 25l6-3-3-20Z"></path><path class="companion-hair-fill companion-side-lock right" d="M60 30c4 8 3 18-2 25l-6-3 3-20Z"></path>`,
+  };
+  if (style === "curly") return {
+    behind: `<path class="companion-hair-fill companion-hair-back" d="M14 35c-3-5 1-11 6-11-2-6 4-11 9-9 1-6 9-8 13-4 4-4 12-1 12 4 6-2 11 4 8 9 6 1 8 8 4 12-3 4-8 4-11 1H25c-3 3-8 3-11-1-3-4-2-9 0-11Z"></path>`,
+    front: `${scalpCap}<path class="companion-hair-fill companion-curly-fringe" d="M17 31c-1-5 4-9 8-7-1-5 5-8 9-4 2-5 9-5 12-1 4-3 10 0 9 5 5-1 9 4 7 8-6 2-11 0-15-4-4 5-10 5-14 0-4 4-9 5-15 3Z"></path><path class="companion-hair-highlight" d="M25 19c4-4 9-5 13-4"></path>`,
+  };
+  if (style === "ponytail") return {
+    behind: `<g class="companion-ponytail"><path class="companion-hair-fill" d="M59 22c11 1 17 9 13 18-2 5-7 8-13 7 4-5 3-10-2-14Z"></path><circle class="companion-hair-tie" cx="59" cy="26" r="3"></circle></g>`,
+    front: `${commonFront}<path class="companion-hair-fill companion-side-lock right" d="M58 29c4 7 2 15-3 20l-4-4 3-15Z"></path>`,
+  };
+  if (style === "spiky") return {
+    behind: `<path class="companion-hair-fill companion-hair-back" d="m17 32 2-13 6 3 1-12 8 6 6-12 5 11 9-8v12l9-3-3 18Z"></path>`,
+    front: `${scalpCap}<path class="companion-hair-fill companion-spiky-fringe" d="M18 30 24 14l6 9 8-14 6 13 10-12-1 14 9-4-2 14c-6-1-10-3-14-7-5 5-10 5-14 0-4 4-9 7-14 7Z"></path><path class="companion-hair-highlight" d="m29 16 4 7"></path>`,
+  };
+  if (style === "buzz") return {
+    behind: "",
+    front: `<path class="companion-hair-fill companion-hair-front buzz" d="M20 31c1-14 9-21 20-21 12 0 20 8 21 21-6-7-12-10-21-10-8 0-14 3-20 10Z"></path><path class="companion-hair-highlight" d="M28 17c5-3 10-4 16-2"></path>`,
+  };
+  if (style === "long") return {
+    behind: `<path class="companion-hair-fill companion-long-hair" d="M13 37C12 17 23 6 40 6s28 11 27 31l3 31c-7 5-14 4-19 0l-2-21H31l-2 21c-6 4-13 5-19 0Z"></path>`,
+    front: `${commonFront}<path class="companion-hair-fill companion-side-lock left" d="M19 29c-5 10-4 24 3 34l8-4-5-30Z"></path><path class="companion-hair-fill companion-side-lock right" d="M61 29c5 10 4 24-3 34l-8-4 5-30Z"></path>`,
+  };
+  if (style === "wavy") return {
+    behind: `<path class="companion-hair-fill companion-long-hair wavy" d="M13 38C11 18 23 6 40 6s29 12 27 32c5 9 2 17-2 22 5 5 3 12-2 16-5-3-8-7-10-13-4 7-9 10-15 8-6 3-12-1-14-8-2 6-6 11-11 13-5-4-7-11-2-16-4-5-7-13-2-22Z"></path>`,
+    front: `${scalpCap}<path class="companion-hair-fill companion-wavy-fringe" d="M18 31c4-12 12-19 23-19 10 0 18 7 21 18-6 2-10-1-13-6-3 6-8 8-13 4-5 5-11 6-18 3Z"></path><path class="companion-hair-highlight" d="M26 18c6-5 13-6 20-3"></path>`,
+  };
+  if (style === "braids") return {
+    behind: `<path class="companion-hair-fill companion-hair-back" d="M16 36C14 18 25 7 40 7s26 11 24 29l-8 16H24Z"></path><path class="companion-hair-fill companion-braid left" d="M22 34c-7 8-8 17-3 25-5 6-4 14 2 19 7-5 8-13 3-20 5-8 4-17-2-24Z"></path><path class="companion-hair-fill companion-braid right" d="M58 34c7 8 8 17 3 25 5 6 4 14-2 19-7-5-8-13-3-20-5-8-4-17 2-24Z"></path>`,
+    front: `${commonFront}<path class="companion-hair-highlight" d="M25 24c3 4 6 5 10 4"></path>`,
+  };
+  if (style === "mullet") return {
+    behind: `<path class="companion-hair-fill companion-mullet-back" d="M17 34C15 18 25 8 40 8s25 10 23 27l2 26c-6 4-12 2-15-4l-1-13H30l-2 16c-6 2-11-2-12-8Z"></path>`,
+    front: `${scalpCap}<path class="companion-hair-fill companion-mullet-fringe" d="M18 31c3-11 10-18 21-19 10 0 18 6 22 16-7 1-11-2-14-7-4 6-8 8-13 4-4 5-10 7-16 6Z"></path><path class="companion-hair-highlight" d="M27 18c5-4 11-5 16-3"></path>`,
+  };
+  if (style === "curtain") return {
+    behind: `<path class="companion-hair-fill companion-hair-back" d="M17 35C15 18 25 7 40 7s25 11 23 28l-6 12-5-7H28l-5 7Z"></path>`,
+    front: `<path class="companion-hair-fill companion-curtain left" d="M18 34C17 19 26 9 39 8c0 12-5 21-17 28Z"></path><path class="companion-hair-fill companion-curtain right" d="M62 34C63 19 54 9 41 8c0 12 5 21 17 28Z"></path><path class="companion-hair-highlight" d="M28 17c3-3 6-5 10-6"></path>`,
+  };
+  if (style === "mohawk") return {
+    behind: `<path class="companion-hair-fill companion-mohawk-back" d="M32 15 34 5l5 4 4-8 4 10 6-3-3 12Z"></path>`,
+    front: `<path class="companion-hair-fill companion-mohawk" d="M25 21c3-5 7-8 11-9l2-8 5 5 5-7 2 10c4 2 7 5 9 10-5-2-9-3-14-2-7-1-13 0-20 1Z"></path><path class="companion-hair-fill companion-mohawk-fade" d="M20 31c1-8 6-13 13-16l3 7c-6 2-11 5-16 9Zm40 0c-1-8-6-13-13-16l-3 7c6 2 11 5 16 9Z"></path><path class="companion-hair-highlight" d="m40 10 3-4 2 7"></path>`,
+  };
+  return { behind: "", front: commonFront };
+}
+
+function createCompanionAccessorySvg(accessory) {
+  const empty = { behind: "", front: "" };
+  if (accessory === "cap") return { behind: "", front: `<g class="companion-accessory-svg companion-cap"><path d="M18 24c1-12 10-19 22-19s21 7 22 19Z"></path><path d="M39 23c10-1 19 1 25 5-8 2-17 2-25-1Z"></path><path class="accessory-highlight" d="M27 13c6-5 15-6 22-3"></path></g>` };
+  if (accessory === "headphones") return { behind: "", front: `<g class="companion-accessory-svg companion-headphones"><path d="M17 37V26c0-14 10-23 23-23s23 9 23 23v11"></path><rect x="13" y="32" width="9" height="17" rx="4"></rect><rect x="58" y="32" width="9" height="17" rx="4"></rect><path class="accessory-highlight" d="M23 18c5-8 12-11 21-10"></path></g>` };
+  if (accessory === "scarf") return { behind: "", front: `<g class="companion-accessory-svg companion-scarf"><path d="M25 54c9 4 21 4 30 0l1 10c-10 4-22 4-32 0Z"></path><path d="M49 61c6 5 9 12 8 21l-9-3c2-6 0-11-3-15Z"></path><path class="accessory-highlight" d="M30 58c6 2 12 2 18 0"></path></g>` };
+  if (accessory === "glasses") return { behind: "", front: `<g class="companion-accessory-svg companion-glasses"><rect x="23" y="32" width="14" height="11" rx="5"></rect><rect x="43" y="32" width="14" height="11" rx="5"></rect><path d="M37 36h6M23 36l-5-2m39 2 5-2"></path><path class="accessory-highlight" d="m26 35 4-1"></path></g>` };
+  if (accessory === "beanie") return { behind: "", front: `<g class="companion-accessory-svg companion-beanie"><path d="M18 25c0-13 10-22 22-22s22 9 22 22Z"></path><rect x="16" y="21" width="48" height="10" rx="5"></rect><circle cx="40" cy="3" r="5"></circle><path class="accessory-highlight" d="M27 12c5-5 12-6 18-5"></path></g>` };
+  if (accessory === "bow") return { behind: "", front: `<g class="companion-accessory-svg companion-bow"><path d="M39 57c-6-6-13-6-14 1s7 9 14 3Z"></path><path d="M41 57c6-6 13-6 14 1s-7 9-14 3Z"></path><circle cx="40" cy="59" r="4"></circle></g>` };
+  if (accessory === "backpack") return { behind: `<g class="companion-accessory-svg companion-backpack"><rect x="50" y="55" width="18" height="28" rx="8"></rect><path d="M53 62c4-4 9-4 13 0"></path><path class="accessory-highlight" d="M56 59c3-2 6-2 8 0"></path></g>`, front: "" };
+  return empty;
+}
+
+function getCompanionSettings(person) {
+  const stored = person.companion || {};
+  return {
+    outfit: COMPANION_OUTFITS.some((item) => item.id === stored.outfit) ? stored.outfit : "hoodie",
+    color: COMPANION_COLORS.includes(stored.color) ? stored.color : COMPANION_COLORS[0],
+    skin: COMPANION_SKINS.includes(stored.skin) ? stored.skin : COMPANION_SKINS[1],
+    pants: COMPANION_PANTS.includes(stored.pants) ? stored.pants : COMPANION_PANTS[0],
+    hair: COMPANION_HAIRS.some((item) => item.id === stored.hair) ? stored.hair : "short",
+    hairColor: COMPANION_HAIR_COLORS.includes(stored.hairColor) ? stored.hairColor : COMPANION_HAIR_COLORS[0],
+    accessory: COMPANION_ACCESSORIES.some((item) => item.id === stored.accessory) ? stored.accessory : "none",
+    accessoryColor: COMPANION_ACCESSORY_COLORS.includes(stored.accessoryColor) ? stored.accessoryColor : COMPANION_ACCESSORY_COLORS[0],
+  };
+}
+
+function getCompanionActivity(personId) {
+  const weekAgo = new Date();
+  weekAgo.setDate(weekAgo.getDate() - 7);
+  const tasks = state.calendars.flatMap((calendar) => calendar.tasks || [])
+    .filter((task) => task.assigneeId === personId && task.type !== "supertask");
+  if (tasks.some((task) => task.closed && task.closedAt && new Date(task.closedAt) >= weekAgo)) return "celebrate";
+  if (tasks.some((task) => task.completed && !task.closed)) return "proud";
+  return "idle";
+}
+
+function createCompanionOptionGroup(person, label, key, options, selected) {
+  const group = document.createElement("div");
+  group.className = "companion-option-group";
+  const title = document.createElement("strong");
+  title.textContent = label;
+  const choices = document.createElement("div");
+  choices.className = "companion-choice-list";
+  options.forEach((option) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `companion-choice ${selected === option.id ? "selected" : ""}`;
+    button.textContent = option.label;
+    button.setAttribute("aria-pressed", String(selected === option.id));
+    button.addEventListener("click", () => updateCompanionSetting(person.id, key, option.id));
+    choices.appendChild(button);
+  });
+  group.append(title, choices);
+  return group;
+}
+
+function createCompanionColorGroup(person, label, key, colors, selected) {
+  const group = document.createElement("div");
+  group.className = "companion-option-group";
+  const title = document.createElement("strong");
+  title.textContent = label;
+  const choices = document.createElement("div");
+  choices.className = "companion-color-list";
+  colors.forEach((color) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `companion-color ${selected === color ? "selected" : ""}`;
+    button.style.background = color;
+    button.setAttribute("aria-label", `${label} ${color}`);
+    button.setAttribute("aria-pressed", String(selected === color));
+    button.addEventListener("click", () => updateCompanionSetting(person.id, key, color));
+    choices.appendChild(button);
+  });
+  group.append(title, choices);
+  return group;
+}
+
+function updateCompanionSetting(personId, key, value) {
+  const person = state.accounts.find((account) => account.id === personId);
+  if (!person || getCurrentUser()?.id !== personId || isCoordinator()) return;
+  person.companion = { ...getCompanionSettings(person), [key]: value };
+  saveAndRender();
+}
+
+function closeCompanionPopover(popover, launch) {
+  if (!popover?.isConnected || !launch?.isConnected) return;
+  popover.classList.add("hidden");
+  launch.setAttribute("aria-expanded", "false");
 }
 
 function updateRoleAccess() {
@@ -4142,6 +4455,18 @@ function normalizeAccount(account) {
     password: account.password || "",
     role: account.role || "collaborator",
     status: account.status || (account.password ? "active" : "new"),
+    companion: account.companion && typeof account.companion === "object"
+      ? {
+          outfit: account.companion.outfit || "hoodie",
+          color: account.companion.color || COMPANION_COLORS[0],
+          skin: account.companion.skin || COMPANION_SKINS[1],
+          pants: account.companion.pants || COMPANION_PANTS[0],
+          hair: account.companion.hair || "short",
+          hairColor: account.companion.hairColor || COMPANION_HAIR_COLORS[0],
+          accessory: account.companion.accessory || "none",
+          accessoryColor: account.companion.accessoryColor || COMPANION_ACCESSORY_COLORS[0],
+        }
+      : undefined,
   };
 }
 
@@ -4208,6 +4533,86 @@ function normalizeExtraSlots(extraSlots, people) {
     });
   });
   return normalized;
+}
+
+function getAvatarPreviewState() {
+  const personId = "preview-collaborator";
+  const monthId = "preview-month";
+  const calendarId = "preview-calendar";
+  const now = new Date();
+  const isoDaysAgo = (days, hour = 12) => {
+    const date = new Date(now);
+    date.setDate(date.getDate() - days);
+    date.setHours(hour, 0, 0, 0);
+    return date.toISOString();
+  };
+  const dateDaysAgo = (days) => {
+    const date = new Date(now);
+    date.setDate(date.getDate() - days);
+    return toDateInput(date);
+  };
+  const closedTitles = [
+    "Actualizar registro", "Confirmar inventario", "Revisar solicitudes", "Enviar minuta",
+    "Ordenar documentos", "Validar materiales", "Preparar reporte", "Coordinar agenda",
+    "Cerrar observaciones", "Respaldar archivos", "Actualizar contactos", "Revisar entregables",
+  ];
+  const tasks = closedTitles.map((title, index) => createTask({
+    id: `preview-closed-${index + 1}`,
+    title,
+    detail: "Tarea validada por coordinacion.",
+    assigneeId: personId,
+    priority: index % 3 === 0 ? "high" : index % 3 === 1 ? "medium" : "normal",
+    createdAt: dateDaysAgo(Math.min(10, index + 1)),
+    completed: true,
+    completedAt: isoDaysAgo(index % 4, 11),
+    closed: true,
+    closedAt: isoDaysAgo(index % 4, 17),
+    closedBy: "Coordinacion",
+    completedDayIndex: index % 5,
+    preferredDayIndex: index % 5,
+    type: "task",
+  }));
+  tasks.push(
+    createTask({ id: "preview-ready-1", title: "Preparar resumen semanal", detail: "Esperando revision final.", assigneeId: personId, priority: "high", createdAt: dateDaysAgo(2), completed: true, completedAt: isoDaysAgo(0, 14), completedDayIndex: 3, preferredDayIndex: 3 }),
+    createTask({ id: "preview-ready-2", title: "Actualizar panel de seguimiento", detail: "Entregada hoy.", assigneeId: personId, priority: "medium", createdAt: dateDaysAgo(1), completed: true, completedAt: isoDaysAgo(0, 15), completedDayIndex: 4, preferredDayIndex: 4 }),
+    createTask({ id: "preview-active-1", title: "Revisar agenda del equipo", detail: "Pendiente para esta semana.", assigneeId: personId, priority: "normal", createdAt: dateDaysAgo(0), preferredDayIndex: 0 }),
+    createTask({ id: "preview-active-2", title: "Coordinar proxima reunion", detail: "Pendiente para esta semana.", assigneeId: personId, priority: "medium", createdAt: dateDaysAgo(0), preferredDayIndex: 1 }),
+    createTask({ id: "preview-active-3", title: "Organizar nuevas solicitudes", detail: "Pendiente para esta semana.", assigneeId: personId, priority: "normal", createdAt: dateDaysAgo(0), preferredDayIndex: 2 })
+  );
+  return {
+    accounts: [{
+      id: personId,
+      name: "Valentina Rojas",
+      password: "",
+      role: "collaborator",
+      status: "active",
+      companion: {
+        outfit: "hoodie",
+        color: COMPANION_COLORS[0],
+        skin: COMPANION_SKINS[1],
+        pants: COMPANION_PANTS[1],
+        hair: "wavy",
+        hairColor: COMPANION_HAIR_COLORS[4],
+        accessory: "glasses",
+        accessoryColor: COMPANION_ACCESSORY_COLORS[5],
+      },
+    }],
+    months: [{ id: monthId, name: "Julio", order: 0, color: "#dff5e8" }],
+    calendars: [{
+      id: calendarId,
+      monthId,
+      name: "Semana actual",
+      order: 0,
+      isCurrent: true,
+      tasks,
+      savedTasks: [],
+      repository: [],
+      extraSlots: {},
+    }],
+    activeCalendarId: calendarId,
+    reviewQueue: [],
+    completionHistory: [],
+  };
 }
 
 function getSeedState() {
