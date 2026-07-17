@@ -43,7 +43,13 @@
   async function getSession() {
     const { data, error } = await client.auth.getSession();
     if (error) throw error;
-    return data.session || null;
+    if (!data.session) return null;
+    const { data: userData, error: userError } = await client.auth.getUser();
+    if (userError || !userData.user) {
+      await client.auth.signOut({ scope: "local" });
+      return null;
+    }
+    return data.session;
   }
 
   async function signIn(email, password) {
