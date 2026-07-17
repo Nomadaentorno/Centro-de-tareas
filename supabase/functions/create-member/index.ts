@@ -48,8 +48,8 @@ Deno.serve(async (request) => {
   const password = String(body.password || "");
   const role = body.role === "coordinator" ? "coordinator" : "collaborator";
 
-  if (!workspaceId || !displayName || !email || password.length < 8) {
-    return Response.json({ error: "Workspace, name, email and an 8-character password are required" }, { status: 400, headers: corsHeaders });
+  if (!workspaceId) {
+    return Response.json({ error: "Workspace is required" }, { status: 400, headers: corsHeaders });
   }
 
   const { data: membership } = await adminClient
@@ -88,6 +88,10 @@ Deno.serve(async (request) => {
     const { error: deleteError } = await adminClient.auth.admin.deleteUser(targetUserId);
     if (deleteError) return Response.json({ error: deleteError.message }, { status: 400, headers: corsHeaders });
     return Response.json({ ok: true }, { headers: corsHeaders });
+  }
+
+  if (!displayName || !email || password.length < 8) {
+    return Response.json({ error: "Name, email and an 8-character password are required" }, { status: 400, headers: corsHeaders });
   }
 
   const { data: created, error: createError } = await adminClient.auth.admin.createUser({

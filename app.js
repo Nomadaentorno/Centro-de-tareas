@@ -360,6 +360,7 @@ function bindEvents() {
       task.subtasks = collectSubtaskRows(elements.editSubtaskRows);
       syncGeneratedSubtasks(task);
     }
+    if (task.closed) syncClosedTaskHistory(task);
     elements.editDialog.close();
     saveAndRender();
   });
@@ -958,6 +959,9 @@ function createTask(data) {
     createdAt: data.createdAt || toDateInput(new Date()),
     completed: Boolean(data.completed),
     completedAt: data.completedAt || "",
+    closed: Boolean(data.closed),
+    closedAt: data.closedAt || "",
+    closedBy: data.closedBy || "",
     completedDayIndex: Number.isInteger(data.completedDayIndex) ? data.completedDayIndex : null,
     preferredDayIndex: Number.isInteger(data.preferredDayIndex) ? data.preferredDayIndex : null,
     type: data.type || "task",
@@ -1184,6 +1188,7 @@ function renderCalendarHub() {
       renderCalendarHub();
     });
     const addCalendar = actionButton("Calendario +", () => addCalendarToMonth(month.id));
+    const monthReport = actionButton("Informe mensual", () => downloadMonthlyReportExcel(month.id));
     const removeMonth = actionButton("Eliminar mes", () => deleteMonth(month.id), "remove-template");
     const color = document.createElement("input");
     color.type = "color";
@@ -1198,7 +1203,7 @@ function renderCalendarHub() {
     const monthStats = document.createElement("span");
     monthStats.className = "counter";
     monthStats.textContent = getMonthProgressText(month.id);
-    header.append(dragHandle, input, color, monthStats, addCalendar, removeMonth);
+    header.append(dragHandle, input, color, monthStats, addCalendar, monthReport, removeMonth);
     card.style.borderColor = month.color || getPastelColor(month.order);
     card.style.background = `${month.color || getPastelColor(month.order)}33`;
     card.appendChild(header);
@@ -1311,7 +1316,12 @@ function closeReviewedTask(reviewEntryId) {
   }));
 
   if (calendar) {
-    calendar.tasks = calendar.tasks.filter((candidate) => candidate.id !== item.originalTaskId);
+    if (task) {
+      task.completed = true;
+      task.closed = true;
+      task.closedAt = closedAt;
+      task.closedBy = getCurrentUser()?.name || "Coordinacion";
+    }
     calendar.repository = calendar.repository.filter((candidate) =>
       (candidate.originalTaskId || candidate.id) !== item.originalTaskId || candidate.repositoryStatus !== "completed"
     );
@@ -1328,7 +1338,7 @@ function closeParentSupertaskWhenComplete(calendar, parentId, closedAt) {
   if (!parentId) return;
   const parent = calendar.tasks.find((task) => task.id === parentId && task.type === "supertask");
   if (!parent) return;
-  const remainingChildren = calendar.tasks.filter((task) => task.parentId === parentId);
+  const remainingChildren = calendar.tasks.filter((task) => task.parentId === parentId && !task.closed);
   if (remainingChildren.length) return;
 
   const alreadyArchived = state.completionHistory.some((item) =>
@@ -1351,7 +1361,11 @@ function closeParentSupertaskWhenComplete(calendar, parentId, closedAt) {
       closedBy: getCurrentUser()?.name || "Coordinacion",
     }));
   }
-  calendar.tasks = calendar.tasks.filter((task) => task.id !== parentId);
+  parent.completed = true;
+  parent.completedAt = parent.completedAt || closedAt;
+  parent.closed = true;
+  parent.closedAt = closedAt;
+  parent.closedBy = getCurrentUser()?.name || "Coordinacion";
 }
 
 function rejectReviewedTask(reviewEntryId) {
@@ -1373,6 +1387,9 @@ function rejectReviewedTask(reviewEntryId) {
       generatedBy: sourceCalendar && parentExists ? item.generatedBy : "",
       completed: false,
       completedAt: "",
+      closed: false,
+      closedAt: "",
+      closedBy: "",
       completedDayIndex: null,
       preferredDayIndex: sourceCalendar && Number.isInteger(item.sourceDayIndex) ? item.sourceDayIndex : null,
       queueOnly: !sourceCalendar,
@@ -1381,6 +1398,9 @@ function rejectReviewedTask(reviewEntryId) {
   } else {
     task.completed = false;
     task.completedAt = "";
+    task.closed = false;
+    task.closedAt = "";
+    task.closedBy = "";
     task.completedDayIndex = null;
     task.preferredDayIndex = Number.isInteger(item.sourceDayIndex) ? item.sourceDayIndex : task.preferredDayIndex;
     task.queueOnly = false;
@@ -1763,44 +1783,178 @@ function downloadCalendarSummaryExcel(calendarId) {
   const calendar = state.calendars.find((item) => item.id === calendarId);
   if (!calendar) return;
   try {
-    const summary = getCalendarSummaryRows(calendar);
-    const htmlRows = summary
-      .map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell ?? "")}</td>`).join("")}</tr>`)
-      .join("");
-    const workbook = [
-      "<!doctype html>",
-      "<html>",
-      "<head>",
-      '<meta charset="utf-8">',
-      "<style>",
-      "table{border-collapse:collapse;font-family:Arial,sans-serif;font-size:12px}",
-      "td{border:1px solid #999;padding:6px;vertical-align:top}",
-      ".section td{background:#e8eef8;font-weight:bold}",
-      ".head td{background:#f3f4f6;font-weight:bold}",
-      "</style>",
-      "</head>",
-      "<body>",
-      "<table>",
-      htmlRows,
-      "</table>",
-      "</body>",
-      "</html>",
-    ].join("");
-    const blob = new Blob([workbook], { type: "application/vnd.ms-excel;charset=utf-8" });
-    const link = document.createElement("a");
-    const url = URL.createObjectURL(blob);
-    link.href = url;
-    link.download = `${sanitizeFileName(calendar.name)}_resumen.xls`;
-    link.style.display = "none";
-    document.body.appendChild(link);
-    link.click();
-    window.setTimeout(() => {
-      URL.revokeObjectURL(url);
-      link.remove();
-    }, 0);
+    downloadRowsAsExcel(getCalendarSummaryRows(calendar), `${sanitizeFileName(calendar.name)}_resumen.xls`);
   } catch (error) {
     console.error(error);
     alert("No se pudo descargar el resumen. Intenta nuevamente.");
+  }
+}
+
+function downloadRowsAsExcel(rows, fileName) {
+  const htmlRows = rows
+    .map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell ?? "")}</td>`).join("")}</tr>`)
+    .join("");
+  const workbook = [
+    "<!doctype html>",
+    "<html>",
+    "<head>",
+    '<meta charset="utf-8">',
+    "<style>",
+    "table{border-collapse:collapse;font-family:Arial,sans-serif;font-size:12px}",
+    "td{border:1px solid #999;padding:6px;vertical-align:top}",
+    "tr:first-child td{background:#dcefe5;font-size:16px;font-weight:bold}",
+    "</style>",
+    "</head>",
+    "<body><table>",
+    htmlRows,
+    "</table></body>",
+    "</html>",
+  ].join("");
+  const blob = new Blob([workbook], { type: "application/vnd.ms-excel;charset=utf-8" });
+  const link = document.createElement("a");
+  const url = URL.createObjectURL(blob);
+  link.href = url;
+  link.download = fileName;
+  link.style.display = "none";
+  document.body.appendChild(link);
+  link.click();
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url);
+    link.remove();
+  }, 0);
+}
+
+function getTaskReportStats(tasks) {
+  const total = tasks.length;
+  const closed = tasks.filter((task) => task.closed).length;
+  const ready = tasks.filter((task) => task.completed && !task.closed).length;
+  const pending = tasks.filter((task) => !task.completed).length;
+  const efficiency = total ? Math.round((closed / total) * 100) : 0;
+  const closedTasks = tasks.filter((task) => task.closed);
+  const cycleValues = closedTasks
+    .map((task) => {
+      const start = new Date(task.createdAt);
+      const end = new Date(task.closedAt || task.completedAt);
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+      return Math.max(0, (end - start) / 86400000);
+    })
+    .filter((value) => value !== null);
+  const averageCycleDays = cycleValues.length
+    ? Math.round((cycleValues.reduce((sum, value) => sum + value, 0) / cycleValues.length) * 10) / 10
+    : 0;
+  return { total, closed, ready, pending, efficiency, averageCycleDays };
+}
+
+function getMonthlyReportRows(month) {
+  const calendars = state.calendars
+    .filter((calendar) => calendar.monthId === month.id)
+    .sort((a, b) => a.order - b.order);
+  const tasks = calendars.flatMap((calendar) => calendar.tasks.filter((task) => task.type !== "supertask"));
+  const general = getTaskReportStats(tasks);
+  const calendarStats = calendars.map((calendar, index) => ({
+    calendar,
+    week: index + 1,
+    ...getTaskReportStats(calendar.tasks.filter((task) => task.type !== "supertask")),
+  }));
+  const average = (key, filter = () => true) => {
+    const included = calendarStats.filter(filter);
+    if (!included.length) return 0;
+    return Math.round((included.reduce((sum, item) => sum + item[key], 0) / included.length) * 10) / 10;
+  };
+  const rows = [
+    ["Informe mensual"],
+    ["Mes", month.name],
+    ["Fecha de descarga", formatDate(new Date().toISOString())],
+    ["Calendarios incluidos", calendars.length],
+    [],
+    ["Eficiencia general del mes"],
+    ["Indicador", "Resultado"],
+    ["Tareas totales", general.total],
+    ["Tareas cerradas definitivamente", general.closed],
+    ["Tareas listas para revision", general.ready],
+    ["Tareas pendientes", general.pending],
+    ["Porcentaje de eficiencia", `${general.efficiency}%`],
+    ["Tiempo promedio hasta el cierre", `${general.averageCycleDays} dias`],
+    ["Definicion", "Eficiencia = tareas cerradas definitivamente / tareas totales"],
+    [],
+    ["Resultados por calendario"],
+    ["Semana", "Calendario", "Total", "Cerradas", "Listas", "Pendientes", "Eficiencia", "Dias promedio al cierre"],
+  ];
+
+  calendarStats.forEach((item) => rows.push([
+    item.week,
+    item.calendar.name,
+    item.total,
+    item.closed,
+    item.ready,
+    item.pending,
+    `${item.efficiency}%`,
+    item.averageCycleDays,
+  ]));
+
+  rows.push(
+    [],
+    ["Promedio semanal"],
+    ["Metrica", "Promedio de los calendarios"],
+    ["Tareas ingresadas", average("total")],
+    ["Tareas cerradas", average("closed")],
+    ["Tareas listas para revision", average("ready")],
+    ["Tareas pendientes", average("pending")],
+    ["Eficiencia semanal promedio", `${average("efficiency", (item) => item.total > 0)}%`],
+    ["Tiempo promedio de cierre", `${average("averageCycleDays", (item) => item.closed > 0)} dias`],
+    ["Referencia principal", `La eficiencia mensual ponderada es ${general.efficiency}%`],
+    [],
+    ["Eficiencia por colaborador"],
+    ["Colaborador", "Total", "Cerradas", "Listas", "Pendientes", "Eficiencia", "Dias promedio al cierre"]
+  );
+
+  state.people.forEach((person) => {
+    const stats = getTaskReportStats(tasks.filter((task) => task.assigneeId === person.id));
+    rows.push([person.name, stats.total, stats.closed, stats.ready, stats.pending, `${stats.efficiency}%`, stats.averageCycleDays]);
+  });
+
+  rows.push(
+    ["Sin asignar", ...(() => {
+      const stats = getTaskReportStats(tasks.filter((task) => !task.assigneeId));
+      return [stats.total, stats.closed, stats.ready, stats.pending, `${stats.efficiency}%`, stats.averageCycleDays];
+    })()],
+    [],
+    ["Detalle de los calendarios"]
+  );
+
+  calendarStats.forEach((item) => {
+    rows.push(
+      [],
+      [`Semana ${item.week}: ${item.calendar.name}`],
+      ["Tarea", "Responsable", "Estado", "Prioridad", "Dia", "Lista", "Cerrada", "Supertarea", "Detalle"]
+    );
+    item.calendar.tasks
+      .filter((task) => task.type !== "supertask")
+      .forEach((task) => rows.push([
+        task.title,
+        getAccountName(task.assigneeId),
+        task.closed ? "Cerrada" : task.completed ? "Lista para revision" : "Pendiente",
+        PRIORITY_LABELS[task.priority],
+        Number.isInteger(task.completedDayIndex ?? task.preferredDayIndex)
+          ? DAY_NAMES[task.completedDayIndex ?? task.preferredDayIndex]
+          : "",
+        task.completedAt ? formatDate(task.completedAt) : "",
+        task.closedAt ? formatDate(task.closedAt) : "",
+        task.parentId ? getCalendarTaskTitle(task.parentId, item.calendar) : "",
+        task.detail,
+      ]));
+  });
+  return rows;
+}
+
+function downloadMonthlyReportExcel(monthId) {
+  const month = state.months.find((item) => item.id === monthId);
+  if (!month) return;
+  try {
+    downloadRowsAsExcel(getMonthlyReportRows(month), `${sanitizeFileName(month.name)}_informe_mensual.xls`);
+  } catch (error) {
+    console.error(error);
+    alert("No se pudo descargar el informe mensual. Intenta nuevamente.");
   }
 }
 
@@ -1853,7 +2007,7 @@ function getCalendarSummaryRows(calendar) {
   rows.push(
     [],
     ["Tareas completadas"],
-    ["Tarea", "Responsable", "Urgencia", "Dia", "Completada", "Supertarea", "Detalle"]
+    ["Tarea", "Estado", "Responsable", "Urgencia", "Dia", "Completada", "Supertarea", "Detalle"]
   );
 
   completedTasks.forEach((task) => {
@@ -1863,7 +2017,7 @@ function getCalendarSummaryRows(calendar) {
   rows.push(
     [],
     ["Tareas no completadas"],
-    ["Tarea", "Responsable", "Urgencia", "Dia asignado", "Ingreso", "Supertarea", "Detalle"]
+    ["Tarea", "Estado", "Responsable", "Urgencia", "Dia asignado", "Ingreso", "Supertarea", "Detalle"]
   );
 
   pendingTasks.forEach((task) => {
@@ -1877,6 +2031,7 @@ function getSummaryTaskRow(task, calendar, completed) {
   const dayIndex = completed ? task.completedDayIndex : task.preferredDayIndex;
   return [
     task.title,
+    task.closed ? "Cerrada" : task.completed ? "Lista para revision" : "Pendiente",
     getAccountName(task.assigneeId),
     PRIORITY_LABELS[task.priority],
     Number.isInteger(dayIndex) ? DAY_NAMES[dayIndex] : "",
@@ -2369,8 +2524,9 @@ function renderPeople() {
       count.textContent = `Coordinador - ${getAccessStatusText(person)}`;
     } else {
       const active = state.tasks.filter((task) => task.assigneeId === person.id && !task.completed).length;
-      const ready = state.tasks.filter((task) => task.assigneeId === person.id && task.completed).length;
-      count.textContent = `${active} pendientes / ${ready} en revision - ${getAccessStatusText(person)}`;
+      const ready = state.tasks.filter((task) => task.assigneeId === person.id && task.completed && !task.closed).length;
+      const closed = state.tasks.filter((task) => task.assigneeId === person.id && task.closed).length;
+      count.textContent = `${active} pendientes / ${ready} en revision / ${closed} cerradas - ${getAccessStatusText(person)}`;
     }
 
     const password = document.createElement("button");
@@ -2418,7 +2574,7 @@ function renderBoard() {
     const stats = getPersonStats(person.id);
     const subtitle = document.createElement("p");
     subtitle.className = "person-progress";
-    subtitle.textContent = `${stats.percent}% listas para revision - ${stats.completed} listas - ${stats.pending} pendientes`;
+    subtitle.textContent = `${stats.efficiency}% eficiencia - ${stats.closed} cerradas - ${stats.ready} en revision - ${stats.pending} pendientes`;
     titleWrap.append(title, subtitle);
 
     const capacity = document.createElement("span");
@@ -2452,11 +2608,13 @@ function renderBoard() {
 
       const pending = schedule.byPerson[person.id].days[dayIndex];
       const completed = schedule.byPerson[person.id].completedDays[dayIndex];
+      const ready = completed.filter((task) => !task.closed);
+      const closed = completed.filter((task) => task.closed);
       const extras = getExtraSlots(person.id, dayIndex);
       const capacity = getDayCapacity(person.id, dayIndex);
       const dayHeader = document.createElement("div");
       dayHeader.className = "day-header";
-      dayHeader.innerHTML = `<span>${dayName}</span><span>${pending.length + completed.length}/${capacity} - ${completed.length} en revision</span>`;
+      dayHeader.innerHTML = `<span>${dayName}</span><span>${pending.length + ready.length}/${capacity} activos - ${ready.length} en revision - ${closed.length} cerradas</span>`;
 
       const list = document.createElement("div");
       list.className = "day-list";
@@ -2465,7 +2623,8 @@ function renderBoard() {
         list.appendChild(emptyState("Sin tareas"));
       } else {
         appendDayGroup(list, "Pendientes", pending, "scheduled", dayIndex);
-        appendDayGroup(list, "Listas para revision", completed, "completed", dayIndex);
+        appendDayGroup(list, "Listas para revision", ready, "completed", dayIndex);
+        appendDayGroup(list, "Cerradas", closed, "closed", dayIndex);
       }
 
       const extraButton = document.createElement("button");
@@ -2545,7 +2704,7 @@ function hasRoomForMovedTask(personId, dayIndex, movingTaskId) {
   const personSchedule = schedule.byPerson[personId];
   if (!personSchedule) return false;
   const usedPending = personSchedule.days[dayIndex].filter((task) => task.id !== movingTaskId).length;
-  const usedCompleted = personSchedule.completedDays[dayIndex].length;
+  const usedCompleted = personSchedule.completedDays[dayIndex].filter((task) => !task.closed).length;
   return usedPending + usedCompleted < getDayCapacity(personId, dayIndex);
 }
 
@@ -2659,6 +2818,7 @@ function createTaskCard(task, location, dayIndex = null) {
   node.classList.add(task.priority);
   node.classList.toggle("supertask", task.type === "supertask");
   node.classList.toggle("done", task.completed);
+  node.classList.toggle("closed", task.closed);
   node.dataset.taskId = task.id;
   node.dataset.assigneeId = task.assigneeId || "";
   if (location === "queue" && isStale(task)) {
@@ -2696,7 +2856,12 @@ function createTaskCard(task, location, dayIndex = null) {
   const meta = node.querySelector(".task-meta");
   addPill(meta, PRIORITY_LABELS[task.priority], task.priority);
   addPill(meta, task.assigneeId ? getPersonName(task.assigneeId) : "Sin asignar");
-  addPill(meta, task.completed ? `Lista ${formatDate(task.completedAt)}` : `${daysWaiting(task)} dias`, task.completed ? "done" : location === "queue" && isStale(task) ? "stale" : "");
+  const statusLabel = task.closed
+    ? `Cerrada ${formatDate(task.closedAt || task.completedAt)}`
+    : task.completed
+      ? `Lista ${formatDate(task.completedAt)}`
+      : `${daysWaiting(task)} dias`;
+  addPill(meta, statusLabel, task.completed ? "done" : location === "queue" && isStale(task) ? "stale" : "");
   addPill(meta, TYPE_LABELS[task.type], task.type === "supertask" ? "super" : "");
   if (Number.isInteger(task.preferredDayIndex)) addPill(meta, DAY_NAMES[task.preferredDayIndex]);
   if (task.parentId) addPill(meta, `De: ${getParentTitle(task.parentId)}`, "super");
@@ -2705,7 +2870,11 @@ function createTaskCard(task, location, dayIndex = null) {
   const editButton = node.querySelector(".edit-action");
   const removeButton = node.querySelector(".remove-action");
 
-  if (task.completed) {
+  if (task.closed && isCoordinator()) {
+    completeButton.remove();
+    removeButton.remove();
+    editButton.addEventListener("click", () => openEditor(task.id));
+  } else if (task.completed) {
     completeButton.remove();
     editButton.remove();
     removeButton.remove();
@@ -2950,16 +3119,17 @@ function buildSchedule() {
 
 function getPersonStats(personId) {
   const tasks = state.tasks.filter((task) => task.assigneeId === personId && task.type !== "supertask");
-  const completed = tasks.filter((task) => task.completed).length;
-  const pending = tasks.length - completed;
-  const percent = tasks.length ? Math.round((completed / tasks.length) * 100) : 0;
-  return { total: tasks.length, completed, pending, percent };
+  const closed = tasks.filter((task) => task.closed).length;
+  const ready = tasks.filter((task) => task.completed && !task.closed).length;
+  const pending = tasks.filter((task) => !task.completed).length;
+  const efficiency = tasks.length ? Math.round((closed / tasks.length) * 100) : 0;
+  return { total: tasks.length, completed: closed + ready, closed, ready, pending, percent: efficiency, efficiency };
 }
 
 function findPlacementDay(personSchedule, personId, task) {
   if (Number.isInteger(task.preferredDayIndex)) {
     const used = personSchedule.days[task.preferredDayIndex].length +
-      personSchedule.completedDays[task.preferredDayIndex].length;
+      personSchedule.completedDays[task.preferredDayIndex].filter((item) => !item.closed).length;
     return used < getDayCapacity(personId, task.preferredDayIndex) ? task.preferredDayIndex : -1;
   }
 
@@ -2968,7 +3138,8 @@ function findPlacementDay(personSchedule, personId, task) {
 
 function findNextOpenDay(personSchedule, personId) {
   for (let dayIndex = 0; dayIndex < DAY_NAMES.length; dayIndex += 1) {
-    const used = personSchedule.days[dayIndex].length + personSchedule.completedDays[dayIndex].length;
+    const used = personSchedule.days[dayIndex].length +
+      personSchedule.completedDays[dayIndex].filter((item) => !item.closed).length;
     if (used < getDayCapacity(personId, dayIndex)) return dayIndex;
   }
   return -1;
@@ -3004,7 +3175,7 @@ function sortTasks(a, b) {
 
 function openEditor(taskId) {
   const task = state.tasks.find((item) => item.id === taskId);
-  if (!task || task.completed) return;
+  if (!task || (task.completed && !(task.closed && isCoordinator()))) return;
   if (!isCoordinator() && task.assigneeId !== getCurrentUser()?.id) return;
   if (isCoordinator() && (task.type === "supertask" || task.parentId || task.generatedBy)) {
     openSupertaskManager(task.type === "supertask" ? task.id : task.parentId || task.generatedBy);
@@ -3340,6 +3511,20 @@ function createReviewSnapshot(task, calendar, readyAt) {
     assigneeName: getPersonName(task.assigneeId),
     parentTitle: task.parentId ? getParentTitle(task.parentId) : "",
   }, state.calendars, state.months);
+}
+
+function syncClosedTaskHistory(task) {
+  const calendar = state.calendars.find((item) => item.tasks.some((candidate) => candidate.id === task.id));
+  const historyItem = state.completionHistory.find((item) =>
+    item.originalTaskId === task.id && (!calendar || item.sourceCalendarId === calendar.id)
+  );
+  if (!historyItem) return;
+  historyItem.title = task.title;
+  historyItem.detail = task.detail;
+  historyItem.assigneeId = task.assigneeId;
+  historyItem.assigneeName = getAccountName(task.assigneeId);
+  historyItem.priority = task.priority;
+  historyItem.closedEditedAt = new Date().toISOString();
 }
 
 function removeTask(taskId) {
@@ -3816,10 +4001,11 @@ function normalizeState(rawState) {
     months = [];
     calendars = [];
   }
-  const reviewQueue = normalizeReviewQueue(rawState.reviewQueue, calendars, months);
   const completionHistory = Array.isArray(rawState.completionHistory)
     ? rawState.completionHistory.map(normalizeCompletionHistoryItem)
     : [];
+  restoreClosedTasksFromHistory(calendars, completionHistory);
+  const reviewQueue = normalizeReviewQueue(rawState.reviewQueue, calendars, months);
   return {
     accounts,
     months,
@@ -3832,6 +4018,34 @@ function normalizeState(rawState) {
   };
 }
 
+function restoreClosedTasksFromHistory(calendars, completionHistory) {
+  completionHistory.forEach((item) => {
+    const calendar = calendars.find((candidate) => candidate.id === item.sourceCalendarId);
+    if (!calendar) return;
+    const originalTaskId = item.originalTaskId || item.id;
+    const existing = calendar.tasks.find((task) => task.id === originalTaskId);
+    if (existing) {
+      existing.completed = true;
+      existing.completedAt = existing.completedAt || item.readyAt || item.closedAt;
+      existing.closed = true;
+      existing.closedAt = item.closedAt;
+      existing.closedBy = item.closedBy || "Coordinacion";
+      return;
+    }
+    calendar.tasks.push(normalizeTask({
+      ...item,
+      id: originalTaskId,
+      completed: true,
+      completedAt: item.readyAt || item.closedAt,
+      completedDayIndex: Number.isInteger(item.sourceDayIndex) ? item.sourceDayIndex : item.completedDayIndex,
+      preferredDayIndex: Number.isInteger(item.sourceDayIndex) ? item.sourceDayIndex : item.preferredDayIndex,
+      closed: true,
+      closedAt: item.closedAt,
+      closedBy: item.closedBy || "Coordinacion",
+    }));
+  });
+}
+
 function normalizeReviewQueue(rawQueue, calendars, months) {
   const source = Array.isArray(rawQueue) ? rawQueue : [];
   const normalized = source.map((item) => normalizeReviewItem(item, calendars, months));
@@ -3839,7 +4053,7 @@ function normalizeReviewQueue(rawQueue, calendars, months) {
 
   calendars.forEach((calendar) => {
     calendar.tasks
-      .filter((task) => task.completed && task.type !== "supertask")
+      .filter((task) => task.completed && !task.closed && task.type !== "supertask")
       .forEach((task) => {
         const key = `${calendar.id}:${task.id}`;
         if (known.has(key)) return;

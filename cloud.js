@@ -33,8 +33,11 @@
       parentId: row.parent_task_id || row.metadata?.parentId || "",
       preferredDayIndex: Number.isInteger(row.preferred_day_index) ? row.preferred_day_index : null,
       completedDayIndex: Number.isInteger(row.day_index) ? row.day_index : null,
-      completed: row.status === "ready",
+      completed: row.status === "ready" || row.status === "closed",
+      closed: row.status === "closed" && row.metadata?.storage !== "repository",
       completedAt: row.ready_at || row.metadata?.completedAt || "",
+      closedAt: row.closed_at || row.metadata?.closedAt || "",
+      closedBy: row.metadata?.closedBy || "",
       order: row.sort_order || 0,
       createdAt: row.metadata?.createdAt || row.created_at,
     };
@@ -146,7 +149,7 @@
       if (!calendar) return;
       const item = rowTaskToApp(row);
       if (row.metadata?.storage === "repository") calendar.repository.push(item);
-      else if (row.status !== "closed") calendar.tasks.push(item);
+      else calendar.tasks.push(item);
     });
     templateRows.forEach((row) => {
       const calendar = calendarMap.get(row.calendar_id);
@@ -200,10 +203,11 @@
         id: task.id, workspace_id: workspaceId, calendar_id: calendar.id, parent_task_id: task.parentId || null,
         title: task.title, detail: task.detail || "", assignee_id: task.assigneeId || null,
         priority: task.priority || "normal", kind: task.type === "supertask" ? "supertask" : "task",
-        status: task.completed ? "ready" : "active",
+        status: task.closed ? "closed" : task.completed ? "ready" : "active",
         preferred_day_index: Number.isInteger(task.preferredDayIndex) ? task.preferredDayIndex : null,
         day_index: Number.isInteger(task.completedDayIndex) ? task.completedDayIndex : null,
         sort_order: task.order || index, ready_at: task.completed ? dateToIso(task.completedAt) : null,
+        closed_at: task.closed ? dateToIso(task.closedAt || task.completedAt) : null,
         metadata: cleanPayload({ ...task, storage: "active" }),
       }));
       calendar.repository.forEach((item, index) => repositoryRows.push({
@@ -255,7 +259,7 @@
   async function saveCollaboratorReadyTasks(appState, userId) {
     if (!workspaceId || currentMembership?.role !== "collaborator") return;
     const ready = appState.calendars.flatMap((calendar) => calendar.tasks)
-      .filter((task) => task.assigneeId === userId && task.completed);
+      .filter((task) => task.assigneeId === userId && task.completed && !task.closed);
     for (const task of ready) {
       const { error } = await client.from("tasks").update({
         status: "ready", ready_at: dateToIso(task.completedAt),
