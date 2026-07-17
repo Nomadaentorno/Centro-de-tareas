@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@300;400;500;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=cloud-access-3" />
   </head>
   <body>
     <section id="accessShell" class="access-shell"></section>
@@ -20,61 +20,150 @@
         </div>
         <div class="topbar-actions">
           <span class="topbar-stat" id="hubSessionStats">Coordinador</span>
+          <button class="global-cleanup-launch" id="globalCleanupButton" type="button" title="Limpieza general de la aplicacion" aria-label="Abrir limpieza general">
+            <svg viewBox="0 0 32 32" aria-hidden="true">
+              <path d="m18.5 4.5 9 9-4 4-9-9z"></path>
+              <path d="M16.5 10.5 7 20c-2.4 2.4-2.5 6.4-2.5 6.4s4 .1 6.4-2.3l9.6-9.6"></path>
+              <path d="M8.2 19.2c1.4 1.9 3 3.5 4.9 4.8"></path>
+              <path d="M5 8h4M7 6v4M23 24h4M25 22v4"></path>
+            </svg>
+            <span>Limpieza general</span>
+          </button>
           <button class="ghost-button" id="hubLogoutButton" type="button">Salir</button>
         </div>
       </header>
       <main class="calendar-hub">
         <section class="hub-panel">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Organizacion temporal</p>
-              <h2>Meses</h2>
-            </div>
-            <span class="counter" id="hubCalendarCount">0 calendarios</span>
-          </div>
-          <form id="hubMonthForm" class="month-form">
-            <input id="hubMonthName" type="text" maxlength="45" placeholder="Nombre del mes" />
-            <button class="icon-button" type="submit" title="Agregar mes">+</button>
-          </form>
-          <section id="accessRequestsPanel" class="requests-panel hidden">
-            <div class="section-heading">
-              <h2>Solicitudes de acceso</h2>
-              <span class="counter" id="accessRequestCount">0</span>
-            </div>
-            <div id="accessRequestList" class="people-list"></div>
-          </section>
-          <section class="hub-subpanel">
-            <div class="section-heading">
+          <section class="hub-temporal-area" aria-labelledby="temporalAreaTitle">
+            <div class="section-heading hub-temporal-heading">
               <div>
-                <p class="eyebrow">Accesos</p>
-                <h2>Colaboradores y coordinadores</h2>
+                <p class="eyebrow">Organizacion temporal</p>
+                <h2 id="temporalAreaTitle">Meses y calendarios</h2>
+                <p class="hub-section-copy">Crea los meses y arrastra sus calendarios para definir el orden de trabajo.</p>
               </div>
-              <span class="counter" id="teamCount">0</span>
+              <span class="counter" id="hubCalendarCount">0 calendarios</span>
             </div>
-            <form id="personForm" class="person-form hub-person-form">
-              <input id="personName" type="text" maxlength="45" required placeholder="Nombre" />
-              <input id="personPassword" type="password" maxlength="45" placeholder="Clave inicial" />
-              <select id="personRole">
-                <option value="collaborator">Colaborador</option>
-                <option value="coordinator">Coordinador</option>
-              </select>
-              <button class="icon-button" type="submit" title="Agregar perfil">+</button>
+            <form id="hubMonthForm" class="month-form">
+              <input id="hubMonthName" type="text" maxlength="45" placeholder="Nombre del mes" />
+              <button class="icon-button" type="submit" title="Agregar mes">+</button>
             </form>
-            <div id="peopleList" class="people-list"></div>
+            <div id="hubCalendarAdminList" class="calendar-admin-list hub-calendar-admin-list"></div>
           </section>
-          <div id="hubCalendarAdminList" class="calendar-admin-list hub-calendar-admin-list"></div>
-          <section class="hub-subpanel">
-            <div class="section-heading">
+
+          <section class="hub-review-area" aria-labelledby="reviewAreaTitle">
+            <div class="section-heading hub-review-heading">
               <div>
-                <p class="eyebrow">Biblioteca del calendario actual</p>
-                <h2>Supertareas guardadas</h2>
+                <p class="eyebrow">Control de calidad</p>
+                <h2 id="reviewAreaTitle">Revisión y cierre de tareas</h2>
+                <p class="hub-section-copy">Las tareas marcadas como listas esperan aquí la decisión final de coordinación.</p>
               </div>
-              <span class="counter" id="hubSavedSupertaskCount">0</span>
+              <span class="counter" id="hubReviewTotalCount">0 por revisar</span>
             </div>
-            <div id="hubSavedSupertaskList" class="hub-saved-supertask-list"></div>
+            <div class="hub-review-grid">
+              <section class="hub-subpanel hub-review-panel">
+                <div class="section-heading">
+                  <div>
+                    <p class="eyebrow">Repositorio privado</p>
+                    <h2>Tareas listas</h2>
+                  </div>
+                  <span class="counter" id="hubReviewCount">0</span>
+                </div>
+                <div id="hubReviewList" class="hub-review-list"></div>
+              </section>
+              <section class="hub-subpanel hub-history-panel">
+                <div class="section-heading">
+                  <div>
+                    <p class="eyebrow">Calendario natural</p>
+                    <h2>Historial finalizado</h2>
+                  </div>
+                  <span class="counter" id="hubHistoryCount">0</span>
+                </div>
+                <div id="hubCompletionHistory" class="hub-completion-history"></div>
+              </section>
+            </div>
+          </section>
+          <section class="hub-bottom-zone" aria-label="Accesos y biblioteca">
+            <section id="accessRequestsPanel" class="requests-panel hidden">
+              <div class="section-heading">
+                <h2>Solicitudes de acceso</h2>
+                <span class="counter" id="accessRequestCount">0</span>
+              </div>
+              <div id="accessRequestList" class="people-list"></div>
+            </section>
+            <section class="hub-subpanel">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">Accesos</p>
+                  <h2>Colaboradores y coordinadores</h2>
+                </div>
+                <span class="counter" id="teamCount">0</span>
+              </div>
+              <form id="personForm" class="person-form hub-person-form">
+                <input id="personName" type="text" maxlength="45" required placeholder="Nombre" />
+                <input id="personEmail" type="email" maxlength="120" required placeholder="Correo" autocomplete="off" />
+                <input id="personPassword" type="password" minlength="8" maxlength="72" required placeholder="Clave inicial (8+ caracteres)" autocomplete="new-password" />
+                <select id="personRole">
+                  <option value="collaborator">Colaborador</option>
+                  <option value="coordinator">Coordinador</option>
+                </select>
+                <button class="icon-button" type="submit" title="Agregar perfil">+</button>
+                <p class="task-detail person-form-message" id="personFormMessage" role="alert"></p>
+              </form>
+              <div id="peopleList" class="people-list"></div>
+            </section>
+            <section class="hub-subpanel">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">Biblioteca del calendario actual</p>
+                  <h2>Supertareas guardadas</h2>
+                </div>
+                <span class="counter" id="hubSavedSupertaskCount">0</span>
+              </div>
+              <div id="hubSavedSupertaskList" class="hub-saved-supertask-list"></div>
+            </section>
           </section>
         </section>
       </main>
+      <dialog id="globalCleanupDialog" class="edit-dialog global-cleanup-dialog">
+        <form id="globalCleanupForm">
+          <section id="globalCleanupStepOne" class="cleanup-step">
+            <div class="cleanup-dialog-icon" aria-hidden="true">
+              <svg viewBox="0 0 32 32">
+                <path d="m18.5 4.5 9 9-4 4-9-9z"></path>
+                <path d="M16.5 10.5 7 20c-2.4 2.4-2.5 6.4-2.5 6.4s4 .1 6.4-2.3l9.6-9.6"></path>
+                <path d="M8.2 19.2c1.4 1.9 3 3.5 4.9 4.8"></path>
+              </svg>
+            </div>
+            <p class="eyebrow">Paso 1 de 2</p>
+            <h2>¿Realizar una limpieza general?</h2>
+            <p class="cleanup-warning-copy">Esta accion eliminara todos los meses, calendarios, tareas, historial y perfiles de colaboradores. Las cuentas de coordinacion se conservaran.</p>
+            <div class="dialog-actions">
+              <button class="ghost-button" id="globalCleanupCancelFirst" type="button">Cancelar</button>
+              <button class="danger-button" id="globalCleanupContinue" type="button">Si, continuar</button>
+            </div>
+          </section>
+
+          <section id="globalCleanupStepTwo" class="cleanup-step hidden">
+            <p class="eyebrow">Paso 2 de 2</p>
+            <h2>Autorizar limpieza total</h2>
+            <p class="cleanup-warning-copy">Ingresa tu clave de coordinacion y confirma expresamente el alcance de la eliminacion.</p>
+            <label>
+              Clave del administrador
+              <input id="globalCleanupPassword" type="password" autocomplete="current-password" required placeholder="Clave del coordinador" />
+            </label>
+            <label class="cleanup-confirm-check">
+              <input id="globalCleanupConfirm" type="checkbox" required />
+              <span>Si, deseo eliminar todos los meses, calendarios, tareas, historial y colaboradores guardados.</span>
+            </label>
+            <p class="cleanup-error" id="globalCleanupError" role="alert"></p>
+            <div class="dialog-actions cleanup-final-actions">
+              <button class="ghost-button" id="globalCleanupBack" type="button">Volver</button>
+              <button class="ghost-button" id="globalCleanupCancelFinal" type="button">Cancelar</button>
+              <button class="danger-button" id="globalCleanupSubmit" type="submit" disabled>Limpiar toda la aplicacion</button>
+            </div>
+          </section>
+        </form>
+      </dialog>
     </section>
 
     <div id="appShell" class="app-shell hidden">
@@ -87,7 +176,7 @@
         <span class="topbar-stat" id="supertaskStats">0 supertareas - 0%</span>
         <span class="topbar-stat" id="sessionStats">Sin sesion</span>
         <button class="ghost-button" id="seedButton" type="button" title="Cargar ejemplo">Ejemplo</button>
-        <button class="danger-button" id="resetButton" type="button" title="Limpiar datos">Limpiar</button>
+        <button class="danger-button" id="resetButton" type="button" title="Limpiar solamente este calendario">Limpiar</button>
         <button class="ghost-button coordinator-only" id="backToHubButton" type="button" title="Volver a calendarios">Calendarios</button>
         <button class="ghost-button hidden" id="changePasswordButton" type="button" title="Cambiar clave">Cambiar clave</button>
         <button class="ghost-button" id="logoutButton" type="button" title="Cerrar sesion">Salir</button>
@@ -224,7 +313,7 @@
             <button class="tab active" data-view="board" id="boardTab" type="button">Semana</button>
             <button class="tab" data-view="queue" id="queueTab" type="button">Cola</button>
             <button class="tab" data-view="saved" id="savedTab" type="button">Guardadas</button>
-            <button class="tab" data-view="repository" id="repositoryTab" type="button">Repositorio</button>
+            <button class="tab hidden" data-view="repository" id="repositoryTab" type="button" aria-hidden="true" tabindex="-1">Repositorio</button>
           </div>
           <div class="legend" aria-label="Prioridades">
             <span><i class="dot high"></i>Prioritaria</span>
@@ -250,7 +339,7 @@
           <div class="task-meta"></div>
         </div>
         <div class="task-actions">
-          <button class="small-button complete-action" type="button" title="Marcar terminada">Listo</button>
+          <button class="small-button complete-action" type="button" title="Enviar a revision de coordinacion">Listo</button>
           <button class="small-button save-action" type="button" title="Guardar tarea">Guardar</button>
           <button class="small-button edit-action" type="button" title="Editar tarea">Editar</button>
           <button class="small-button remove-action" type="button" title="Eliminar tarea">Eliminar</button>
@@ -434,6 +523,8 @@
 
     </div>
 
-    <script src="app.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/dist/umd/supabase.min.js"></script>
+    <script src="cloud.js?v=cloud-access-3"></script>
+    <script src="app.js?v=cloud-access-3"></script>
   </body>
 </html>

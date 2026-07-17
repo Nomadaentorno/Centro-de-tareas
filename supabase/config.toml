@@ -1,0 +1,4 @@
+project_id = "rblyxgtofbnuqaibkcef"
+
+[functions.create-member]
+verify_jwt = true

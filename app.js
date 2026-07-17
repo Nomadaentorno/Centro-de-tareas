@@ -45,11 +45,19 @@ const state = normalizeState(loadState());
 attachCalendarAccessors(state);
 const undoStack = [];
 let lastSavedSnapshot = serializeState();
+let cloudReady = false;
+let cloudHydrating = false;
+let cloudSyncing = false;
+let cloudSaveTimer = null;
+let cloudReloadTimer = null;
 let restoringUndo = false;
 let templateEditCalendarId = "";
 let templateEditReturnToHub = false;
 let resetConfirmTimer = null;
 let activeDraggedTask = null;
+let hubPointerDrag = null;
+let globalCleanupStepAuthorized = false;
+let globalCleanupOpenTimer = null;
 
 const elements = {
   accessShell: document.querySelector("#accessShell"),
@@ -71,8 +79,10 @@ const elements = {
   saveTemplate: document.querySelector("#saveTemplate"),
   personForm: document.querySelector("#personForm"),
   personName: document.querySelector("#personName"),
+  personEmail: document.querySelector("#personEmail"),
   personPassword: document.querySelector("#personPassword"),
   personRole: document.querySelector("#personRole"),
+  personFormMessage: document.querySelector("#personFormMessage"),
   peopleList: document.querySelector("#peopleList"),
   monthForm: document.querySelector("#monthForm"),
   monthName: document.querySelector("#monthName"),
@@ -84,6 +94,11 @@ const elements = {
   hubCalendarCount: document.querySelector("#hubCalendarCount"),
   hubSavedSupertaskCount: document.querySelector("#hubSavedSupertaskCount"),
   hubSavedSupertaskList: document.querySelector("#hubSavedSupertaskList"),
+  hubReviewTotalCount: document.querySelector("#hubReviewTotalCount"),
+  hubReviewCount: document.querySelector("#hubReviewCount"),
+  hubReviewList: document.querySelector("#hubReviewList"),
+  hubHistoryCount: document.querySelector("#hubHistoryCount"),
+  hubCompletionHistory: document.querySelector("#hubCompletionHistory"),
   hubSessionStats: document.querySelector("#hubSessionStats"),
   accessRequestsPanel: document.querySelector("#accessRequestsPanel"),
   accessRequestCount: document.querySelector("#accessRequestCount"),
@@ -150,6 +165,19 @@ const elements = {
   hubDetailTitle: document.querySelector("#hubDetailTitle"),
   hubDetailContent: document.querySelector("#hubDetailContent"),
   closeHubDetail: document.querySelector("#closeHubDetail"),
+  globalCleanupButton: document.querySelector("#globalCleanupButton"),
+  globalCleanupDialog: document.querySelector("#globalCleanupDialog"),
+  globalCleanupForm: document.querySelector("#globalCleanupForm"),
+  globalCleanupStepOne: document.querySelector("#globalCleanupStepOne"),
+  globalCleanupStepTwo: document.querySelector("#globalCleanupStepTwo"),
+  globalCleanupCancelFirst: document.querySelector("#globalCleanupCancelFirst"),
+  globalCleanupContinue: document.querySelector("#globalCleanupContinue"),
+  globalCleanupPassword: document.querySelector("#globalCleanupPassword"),
+  globalCleanupConfirm: document.querySelector("#globalCleanupConfirm"),
+  globalCleanupError: document.querySelector("#globalCleanupError"),
+  globalCleanupBack: document.querySelector("#globalCleanupBack"),
+  globalCleanupCancelFinal: document.querySelector("#globalCleanupCancelFinal"),
+  globalCleanupSubmit: document.querySelector("#globalCleanupSubmit"),
 };
 
 document.body.appendChild(elements.templateDialog);
@@ -157,7 +185,7 @@ document.body.appendChild(elements.templateDialog);
 elements.taskCreatedAt.value = toDateInput(new Date());
 bindEvents();
 renderSubtaskRows(elements.subtaskRows, []);
-renderAccessGate();
+initializeApplication();
 
 function bindEvents() {
   elements.taskForm.addEventListener("change", (event) => {
@@ -193,24 +221,27 @@ function bindEvents() {
     saveAndRender();
   });
 
-  elements.personForm.addEventListener("submit", (event) => {
+  elements.personForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const name = elements.personName.value.trim();
+    const email = elements.personEmail.value.trim();
     const password = elements.personPassword.value.trim();
     const role = elements.personRole.value;
-    if (!name || !isCoordinator()) return;
-    if (role === "coordinator" && !password) return;
-
-    state.accounts.push({
-      id: createId(),
-      name,
-      password,
-      role,
-      status: password ? "active" : "new",
-    });
-    elements.personForm.reset();
-    saveState();
-    renderCalendarHub();
+    if (!name || !email || password.length < 8 || !isCoordinator() || !cloudReady) return;
+    const submit = elements.personForm.querySelector("button[type='submit']");
+    submit.disabled = true;
+    elements.personFormMessage.textContent = "Creando acceso seguro...";
+    try {
+      await window.CloudStore.createMember({ displayName: name, email, password, role });
+      elements.personForm.reset();
+      elements.personFormMessage.textContent = "Perfil creado correctamente.";
+      await reloadCloudState(true);
+      showSaveAnimation("Perfil creado y disponible en otros equipos");
+    } catch (error) {
+      elements.personFormMessage.textContent = getCloudErrorMessage(error, "No fue posible crear el perfil.");
+    } finally {
+      submit.disabled = false;
+    }
   });
 
   elements.monthForm.addEventListener("submit", (event) => {
@@ -242,6 +273,8 @@ function bindEvents() {
     state.months = sample.months;
     state.calendars = sample.calendars;
     state.activeCalendarId = sample.activeCalendarId;
+    state.reviewQueue = sample.reviewQueue;
+    state.completionHistory = sample.completionHistory;
     renderSubtaskRows(elements.subtaskRows, []);
     saveAndRender();
   });
@@ -257,11 +290,30 @@ function bindEvents() {
     }
     resetResetButton();
     const calendar = getActiveCalendar();
+    if (!calendar) return;
     calendar.tasks = [];
     calendar.savedTasks = [];
     calendar.repository = [];
     calendar.extraSlots = {};
+    state.reviewQueue = state.reviewQueue.filter((item) => item.sourceCalendarId !== calendar.id);
     saveAndRender();
+    showSaveAnimation(`Calendario "${calendar.name}" limpiado`);
+  });
+
+  elements.globalCleanupButton.addEventListener("click", activateGlobalCleanupButton);
+  elements.globalCleanupCancelFirst.addEventListener("click", () => elements.globalCleanupDialog.close());
+  elements.globalCleanupContinue.addEventListener("click", showGlobalCleanupAuthorization);
+  elements.globalCleanupBack.addEventListener("click", showGlobalCleanupWarning);
+  elements.globalCleanupCancelFinal.addEventListener("click", () => elements.globalCleanupDialog.close());
+  elements.globalCleanupPassword.addEventListener("input", updateGlobalCleanupSubmitState);
+  elements.globalCleanupConfirm.addEventListener("change", updateGlobalCleanupSubmitState);
+  elements.globalCleanupForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    performGlobalCleanup();
+  });
+  elements.globalCleanupDialog.addEventListener("close", () => {
+    resetGlobalCleanupDialog();
+    elements.globalCleanupButton.classList.remove("is-expanded");
   });
 
   elements.logoutButton.addEventListener("click", () => {
@@ -372,7 +424,18 @@ function renderAccessGate() {
     } else {
       elements.calendarHubShell.classList.add("hidden");
       elements.appShell.classList.remove("hidden");
-      state.activeCalendarId = getCurrentCalendar().id;
+      const currentCalendar = getCurrentCalendar();
+      if (!currentCalendar) {
+        elements.appShell.classList.add("hidden");
+        elements.accessShell.classList.remove("hidden");
+        elements.accessShell.replaceChildren(createAccessMessageCard(
+          "Calendario pendiente",
+          "La coordinación todavía no ha creado un calendario actual. Esta pantalla se actualizará automáticamente.",
+          true
+        ));
+        return;
+      }
+      state.activeCalendarId = currentCalendar.id;
       saveAndRender();
     }
     return;
@@ -381,8 +444,7 @@ function renderAccessGate() {
   elements.appShell.classList.add("hidden");
   elements.calendarHubShell.classList.add("hidden");
   elements.accessShell.classList.remove("hidden");
-  const hasCoordinator = state.accounts.some((account) => account.role === "coordinator");
-  elements.accessShell.replaceChildren(hasCoordinator ? createLoginCard() : createCoordinatorSetupCard());
+  elements.accessShell.replaceChildren(createLoginCard());
 }
 
 function showCalendarHub() {
@@ -401,37 +463,221 @@ function enterCalendar(calendarId) {
   render();
 }
 
-function logout() {
+async function logout() {
+  try {
+    if (window.CloudStore?.available) await window.CloudStore.signOut();
+  } catch (error) {
+    console.error(error);
+  }
+  cloudReady = false;
   localStorage.removeItem(SESSION_KEY);
-  state.activeCalendarId = getCurrentCalendar().id;
+  applyRemoteState(getEmptyState());
   renderAccessGate();
+}
+
+function createAccessMessageCard(title, message, allowLogout = false) {
+  const card = document.createElement("div");
+  card.className = "access-card";
+  card.innerHTML = `
+    <div class="access-hero">
+      ${createTaskAccessIcon()}
+      <p class="eyebrow">Conexión compartida</p>
+      <h1>${escapeHtml(title)}</h1>
+      <p class="access-copy">${escapeHtml(message)}</p>
+    </div>
+    ${allowLogout ? '<button class="ghost-button" id="messageLogout" type="button">Cerrar sesión</button>' : ""}
+  `;
+  card.querySelector("#messageLogout")?.addEventListener("click", logout);
+  return card;
+}
+
+async function initializeApplication() {
+  elements.appShell.classList.add("hidden");
+  elements.calendarHubShell.classList.add("hidden");
+  elements.accessShell.classList.remove("hidden");
+  elements.accessShell.replaceChildren(createAccessMessageCard("Conectando", "Preparando el espacio compartido..."));
+  if (!window.CloudStore?.available) {
+    elements.accessShell.replaceChildren(createAccessMessageCard(
+      "Sin conexión",
+      window.CloudStore?.error || "No se pudo iniciar la conexión con Supabase. Revisa internet y vuelve a cargar."
+    ));
+    return;
+  }
+  try {
+    const session = await window.CloudStore.getSession();
+    if (!session) {
+      cloudReady = false;
+      localStorage.removeItem(SESSION_KEY);
+      applyRemoteState(getEmptyState());
+      renderAccessGate();
+      return;
+    }
+    await startCloudSession();
+  } catch (error) {
+    console.error(error);
+    elements.accessShell.replaceChildren(createAccessMessageCard(
+      "No se pudo conectar",
+      getCloudErrorMessage(error, "Vuelve a cargar la página para intentarlo otra vez."),
+      true
+    ));
+  }
+}
+
+async function startCloudSession() {
+  let remote = await window.CloudStore.loadWorkspace();
+  if (remote?.needsWorkspace) {
+    const name = remote.session.user.user_metadata?.display_name || remote.session.user.email?.split("@")[0] || "Coordinación";
+    await window.CloudStore.bootstrapWorkspace(name);
+    remote = await window.CloudStore.loadWorkspace();
+  }
+  if (!remote?.state || remote.membership?.status !== "active") {
+    throw new Error("La cuenta todavía no tiene acceso activo al espacio de trabajo.");
+  }
+  applyRemoteState(remote.state);
+  localStorage.setItem(SESSION_KEY, remote.session.user.id);
+  cloudReady = true;
+  window.CloudStore.subscribe(scheduleCloudReload);
+  renderAccessGate();
+}
+
+function applyRemoteState(remoteState) {
+  const restored = normalizeState(remoteState || getEmptyState());
+  cloudHydrating = true;
+  state.accounts = restored.accounts;
+  state.months = restored.months;
+  state.calendars = restored.calendars;
+  state.activeCalendarId = restored.activeCalendarId;
+  state.reviewQueue = restored.reviewQueue;
+  state.completionHistory = restored.completionHistory;
+  const snapshot = serializeState();
+  localStorage.setItem(STORAGE_KEY, snapshot);
+  lastSavedSnapshot = snapshot;
+  cloudHydrating = false;
+}
+
+function scheduleCloudReload() {
+  if (!cloudReady || cloudSyncing) return;
+  window.clearTimeout(cloudReloadTimer);
+  cloudReloadTimer = window.setTimeout(() => reloadCloudState(true), 450);
+}
+
+async function reloadCloudState(renderNow = false) {
+  if (!cloudReady) return;
+  try {
+    const remote = await window.CloudStore.loadWorkspace();
+    if (!remote?.state) return;
+    applyRemoteState(remote.state);
+    if (renderNow) {
+      if (!elements.calendarHubShell.classList.contains("hidden")) renderCalendarHub();
+      else if (!elements.appShell.classList.contains("hidden")) render();
+      else renderAccessGate();
+    }
+  } catch (error) {
+    console.error("No se pudo actualizar el espacio compartido", error);
+  }
+}
+
+function getCloudErrorMessage(error, fallback) {
+  const message = String(error?.context?.body?.error || error?.message || "");
+  if (/invalid login credentials/i.test(message)) return "Correo o clave incorrectos.";
+  if (/email not confirmed/i.test(message)) return "Confirma tu correo antes de iniciar sesión.";
+  if (/user already registered|already been registered/i.test(message)) return "Ese correo ya está registrado.";
+  if (/password/i.test(message) && /least|characters|weak/i.test(message)) return "La clave debe tener al menos 8 caracteres.";
+  return message || fallback;
+}
+
+function createTaskAccessIcon() {
+  return `
+    <div class="access-icon" aria-hidden="true">
+      <svg viewBox="0 0 64 64" focusable="false">
+        <circle class="access-logo-ring" cx="32" cy="32" r="27" />
+        <circle class="access-logo-core" cx="32" cy="32" r="12" />
+        <circle class="access-logo-node node-primary" cx="32" cy="13" r="5" />
+        <circle class="access-logo-node" cx="17" cy="34" r="7" />
+        <circle class="access-logo-node" cx="47" cy="34" r="7" />
+        <path class="access-logo-arc" d="M10 39c11.6-6.5 32.4-6.5 44 0" />
+      </svg>
+    </div>
+  `;
 }
 
 function createCoordinatorSetupCard() {
   const card = document.createElement("div");
-  card.className = "access-card";
+  card.className = "access-card setup-card";
   card.innerHTML = `
-    <div>
-      <p class="eyebrow">Primer acceso</p>
-      <h1>Crear coordinador</h1>
+    <div class="setup-visual" aria-hidden="true">
+      <div class="setup-calendar">
+        <div class="setup-calendar-days"><span>L</span><span>M</span><span>M</span><span>J</span><span>V</span><span>S</span><span>D</span></div>
+        <div class="setup-timeline">
+          <i class="timeline-line line-one"></i>
+          <i class="timeline-line line-two"></i>
+          <i class="timeline-line line-three"></i>
+          <i class="timeline-line line-four"></i>
+          <span class="timeline-task task-one"></span>
+          <span class="timeline-task task-two"></span>
+          <span class="timeline-task task-three"></span>
+          <span class="timeline-task task-four"></span>
+          <span class="timeline-task task-five"></span>
+        </div>
+      </div>
+      <div class="setup-checklist">
+        <span><i>✓</i><b></b></span>
+        <span><i>✓</i><b></b></span>
+        <span><i>✓</i><b></b></span>
+      </div>
     </div>
-    <form id="setupCoordinatorForm">
-      <input id="setupName" type="text" required maxlength="45" placeholder="Nombre del coordinador" />
-      <input id="setupPassword" type="password" required maxlength="45" placeholder="Clave" />
-      <button class="primary-button" type="submit">Crear cuenta</button>
-    </form>
+    <div class="setup-content">
+      <div class="access-hero">
+        <p class="access-kicker">Primer acceso</p>
+        <h1>Crear coordinador</h1>
+        <span class="setup-accent" aria-hidden="true"></span>
+        <p class="access-copy">Configura la cuenta principal para organizar calendarios, tareas y colaboradores.</p>
+      </div>
+      <form id="setupCoordinatorForm">
+        <label class="access-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"></circle><path d="M5.5 20c.4-4 2.6-6 6.5-6s6.1 2 6.5 6"></path></svg>
+          <span class="sr-only">Nombre del coordinador</span>
+          <input id="setupName" type="text" required maxlength="45" placeholder="Nombre del coordinador" autocomplete="name" />
+        </label>
+        <label class="access-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18v12H3z"></path><path d="m3 7 9 6 9-6"></path></svg>
+          <span class="sr-only">Correo del coordinador</span>
+          <input id="setupEmail" type="email" required maxlength="120" placeholder="Correo del coordinador" autocomplete="email" />
+        </label>
+        <label class="access-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path></svg>
+          <span class="sr-only">Clave</span>
+          <input id="setupPassword" type="password" required minlength="8" maxlength="72" placeholder="Clave (8+ caracteres)" autocomplete="new-password" />
+        </label>
+        <button class="primary-button" type="submit">Crear cuenta</button>
+        <button class="ghost-button" id="backToCloudLogin" type="button">Ya tengo una cuenta</button>
+        <p class="task-detail" id="setupError" role="alert"></p>
+      </form>
+    </div>
   `;
-  card.querySelector("#setupCoordinatorForm").addEventListener("submit", (event) => {
+  card.querySelector("#backToCloudLogin").addEventListener("click", renderAccessGate);
+  card.querySelector("#setupCoordinatorForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const name = card.querySelector("#setupName").value.trim();
+    const email = card.querySelector("#setupEmail").value.trim();
     const password = card.querySelector("#setupPassword").value.trim();
-    if (!name || !password) return;
-    const account = { id: createId(), name, password, role: "coordinator" };
-    state.accounts.push(account);
-    ensureCalendarStructure();
-    localStorage.setItem(SESSION_KEY, account.id);
-    saveState();
-    renderAccessGate();
+    const errorNode = card.querySelector("#setupError");
+    if (!name || !email || password.length < 8) return;
+    const submit = card.querySelector("button[type='submit']");
+    submit.disabled = true;
+    errorNode.textContent = "Creando cuenta segura...";
+    try {
+      const result = await window.CloudStore.signUpCoordinator({ name, email, password });
+      if (result.needsEmailConfirmation) {
+        errorNode.textContent = "Revisa tu correo y confirma la cuenta. Después vuelve aquí para iniciar sesión.";
+        submit.disabled = false;
+        return;
+      }
+      await startCloudSession();
+    } catch (error) {
+      errorNode.textContent = getCloudErrorMessage(error, "No fue posible crear la cuenta.");
+      submit.disabled = false;
+    }
   });
   return card;
 }
@@ -440,55 +686,38 @@ function createLoginCard() {
   const card = document.createElement("div");
   card.className = "access-card";
   card.innerHTML = `
-    <div>
+    <div class="access-hero">
+      ${createTaskAccessIcon()}
       <p class="eyebrow">Acceso</p>
       <h1>Iniciar sesion</h1>
+      <p class="access-copy">Entra a tu espacio de coordinacion para revisar tareas, calendarios y avances.</p>
     </div>
     <form id="loginForm">
-      <select id="loginAccount"></select>
-      <input id="loginPassword" type="password" required maxlength="45" placeholder="Clave" />
+      <input id="loginEmail" type="email" required maxlength="120" placeholder="Correo" autocomplete="email" />
+      <input id="loginPassword" type="password" required maxlength="72" placeholder="Clave" autocomplete="current-password" />
       <button class="primary-button" type="submit">Entrar</button>
+      <button class="ghost-button" id="showCoordinatorSetup" type="button">Crear cuenta coordinadora</button>
     </form>
-    <p class="task-detail" id="loginError"></p>
+    <p class="task-detail" id="loginError" role="alert"></p>
   `;
-  const select = card.querySelector("#loginAccount");
-  select.innerHTML = state.accounts
-    .map((account) => `<option value="${account.id}">${escapeHtml(account.name)} - ${account.role === "coordinator" ? "Coordinador" : "Colaborador"}</option>`)
-    .join("");
-  select.addEventListener("change", () => {
-    const account = state.accounts.find((item) => item.id === select.value);
-    if (account && account.role === "collaborator" && !account.password) {
-      renderPasswordSetupCard(account.id);
-    }
+  card.querySelector("#showCoordinatorSetup").addEventListener("click", () => {
+    elements.accessShell.replaceChildren(createCoordinatorSetupCard());
   });
-  const selectedAccount = state.accounts.find((item) => item.id === select.value);
-  if (selectedAccount && selectedAccount.role === "collaborator" && !selectedAccount.password) {
-    window.setTimeout(() => renderPasswordSetupCard(selectedAccount.id), 0);
-  }
-  card.querySelector("#loginForm").addEventListener("submit", (event) => {
+  card.querySelector("#loginForm").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const account = state.accounts.find((item) => item.id === select.value);
+    const email = card.querySelector("#loginEmail").value.trim();
     const password = card.querySelector("#loginPassword").value;
-    if (account && account.role === "collaborator" && !account.password) {
-      renderPasswordSetupCard(account.id);
-      return;
+    const errorNode = card.querySelector("#loginError");
+    const submit = card.querySelector("button[type='submit']");
+    submit.disabled = true;
+    errorNode.textContent = "Conectando...";
+    try {
+      await window.CloudStore.signIn(email, password);
+      await startCloudSession();
+    } catch (error) {
+      errorNode.textContent = getCloudErrorMessage(error, "Correo o clave incorrectos.");
+      submit.disabled = false;
     }
-    if (account && account.role === "collaborator" && account.status === "pending") {
-      card.querySelector("#loginError").textContent = "Tu solicitud de acceso esta pendiente.";
-      return;
-    }
-    if (account && account.role === "collaborator" && account.status === "rejected") {
-      card.querySelector("#loginError").textContent = "Tu solicitud fue rechazada. Solicita acceso al coordinador.";
-      return;
-    }
-    if (!account || account.password !== password) {
-      card.querySelector("#loginError").textContent = "Clave incorrecta.";
-      return;
-    }
-    localStorage.setItem(SESSION_KEY, account.id);
-    state.activeCalendarId = isCoordinator(account) ? state.activeCalendarId || getCurrentCalendar().id : getCurrentCalendar().id;
-    saveState();
-    renderAccessGate();
   });
   return card;
 }
@@ -499,9 +728,11 @@ function renderPasswordSetupCard(accountId) {
   const card = document.createElement("div");
   card.className = "access-card";
   card.innerHTML = `
-    <div>
+    <div class="access-hero">
+      ${createTaskAccessIcon()}
       <p class="eyebrow">Primer ingreso</p>
       <h1>${escapeHtml(account.name)}</h1>
+      <p class="access-copy">Crea tu clave para solicitar acceso y comenzar a colaborar.</p>
     </div>
     <form id="passwordSetupForm">
       <input id="newAccessPassword" type="password" required maxlength="45" placeholder="Crea tu clave" />
@@ -545,37 +776,41 @@ function attachCalendarAccessors(target) {
     },
     tasks: {
       get() {
-        return getActiveCalendar().tasks;
+        return getActiveCalendar()?.tasks || [];
       },
       set(value) {
-        getActiveCalendar().tasks = Array.isArray(value) ? value : [];
+        const calendar = getActiveCalendar();
+        if (calendar) calendar.tasks = Array.isArray(value) ? value : [];
       },
       configurable: true,
     },
     savedTasks: {
       get() {
-        return getActiveCalendar().savedTasks;
+        return getActiveCalendar()?.savedTasks || [];
       },
       set(value) {
-        getActiveCalendar().savedTasks = Array.isArray(value) ? value : [];
+        const calendar = getActiveCalendar();
+        if (calendar) calendar.savedTasks = Array.isArray(value) ? value : [];
       },
       configurable: true,
     },
     repository: {
       get() {
-        return getActiveCalendar().repository;
+        return getActiveCalendar()?.repository || [];
       },
       set(value) {
-        getActiveCalendar().repository = Array.isArray(value) ? value : [];
+        const calendar = getActiveCalendar();
+        if (calendar) calendar.repository = Array.isArray(value) ? value : [];
       },
       configurable: true,
     },
     extraSlots: {
       get() {
-        return getActiveCalendar().extraSlots;
+        return getActiveCalendar()?.extraSlots || {};
       },
       set(value) {
-        getActiveCalendar().extraSlots = value || {};
+        const calendar = getActiveCalendar();
+        if (calendar) calendar.extraSlots = value || {};
       },
       configurable: true,
     },
@@ -585,7 +820,8 @@ function attachCalendarAccessors(target) {
 function getActiveCalendar() {
   ensureCalendarStructure();
   const user = getCurrentUser();
-  const calendarId = user && user.role === "collaborator" ? getCurrentCalendar().id : state.activeCalendarId;
+  const currentCalendar = getCurrentCalendar();
+  const calendarId = user && user.role === "collaborator" ? currentCalendar?.id : state.activeCalendarId;
   return state.calendars.find((calendar) => calendar.id === calendarId) || getCurrentCalendar();
 }
 
@@ -595,17 +831,15 @@ function getCurrentCalendar() {
 }
 
 function ensureCalendarStructure() {
-  if (!state.months.length) {
-    state.months.push({ id: createId(), name: "Mes actual", order: 0 });
-  }
   if (!state.calendars.length) {
-    state.calendars.push(createCalendar({ name: "Calendario actual", monthId: state.months[0].id, order: 0, isCurrent: true }));
+    state.activeCalendarId = "";
+    return;
   }
   if (!state.calendars.some((calendar) => calendar.isCurrent)) {
     state.calendars[0].isCurrent = true;
   }
   if (!state.activeCalendarId || !state.calendars.some((calendar) => calendar.id === state.activeCalendarId)) {
-    state.activeCalendarId = getCurrentCalendar().id;
+    state.activeCalendarId = state.calendars.find((calendar) => calendar.isCurrent)?.id || state.calendars[0].id;
   }
 }
 
@@ -690,6 +924,7 @@ function createTask(data) {
     parentId: data.parentId || "",
     generatedBy: data.generatedBy || "",
     order: data.order || 0,
+    queueOnly: Boolean(data.queueOnly),
   };
 }
 
@@ -823,7 +1058,7 @@ function updateRoleAccess() {
   document.querySelector("#calendarAdminSection").classList.add("hidden");
   document.querySelector("#queueTab").classList.toggle("hidden", !coordinator);
   document.querySelector("#savedTab").classList.toggle("hidden", !coordinator);
-  document.querySelector("#repositoryTab").classList.toggle("hidden", !coordinator);
+  document.querySelector("#repositoryTab")?.classList.add("hidden");
   elements.seedButton.classList.toggle("hidden", !coordinator);
   elements.resetButton.classList.toggle("hidden", !coordinator);
   elements.changePasswordButton.classList.toggle("hidden", coordinator || !user);
@@ -848,6 +1083,7 @@ function renderCalendarHub() {
   elements.hubSavedSupertaskList.replaceChildren();
   if (!isCoordinator()) return;
 
+  renderReviewDashboard();
   renderAccessRequests();
   renderPeople();
   renderHubSavedSupertasks();
@@ -855,12 +1091,48 @@ function renderCalendarHub() {
   const user = getCurrentUser();
   elements.hubSessionStats.textContent = user ? `${user.name} - Coordinador` : "Coordinador";
   const months = state.months.slice().sort((a, b) => a.order - b.order);
+  if (!months.length) {
+    elements.hubCalendarAdminList.appendChild(emptyState("Aun no hay meses. Escribe un nombre y pulsa + para crear el primero."));
+  }
   months.forEach((month) => {
     const card = document.createElement("section");
     card.className = "month-card";
+    card.draggable = true;
+    card.dataset.monthId = month.id;
+    card.addEventListener("dragstart", (event) => {
+      if (event.target instanceof Element && event.target.closest(".calendar-row")) return;
+      if (event.target instanceof Element && event.target.closest("button, input, select, textarea")) {
+        event.preventDefault();
+        return;
+      }
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", `month:${month.id}`);
+      card.classList.add("is-dragging");
+    });
+    card.addEventListener("dragend", clearHubDragClasses);
+    card.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      card.classList.add("drag-over");
+    });
+    card.addEventListener("dragleave", (event) => {
+      if (!(event.relatedTarget instanceof Node) || !card.contains(event.relatedTarget)) card.classList.remove("drag-over");
+    });
+    card.addEventListener("drop", (event) => {
+      event.preventDefault();
+      const payload = event.dataTransfer.getData("text/plain");
+      if (payload.startsWith("month:")) reorderMonthByDrop(payload.slice(6), month.id);
+      if (payload.startsWith("calendar:")) moveCalendarToMonthEnd(payload.slice(9), month.id);
+      clearHubDragClasses();
+    });
 
     const header = document.createElement("div");
     header.className = "month-card-header";
+    const dragHandle = document.createElement("span");
+    dragHandle.className = "drag-handle month-drag-handle";
+    dragHandle.textContent = "⋮⋮";
+    dragHandle.title = "Arrastrar mes para cambiar su posicion";
+    dragHandle.addEventListener("pointerdown", (event) => startHubPointerDrag(event, "month", month.id, card));
     const input = document.createElement("input");
     input.className = "month-title-input";
     input.value = month.name;
@@ -871,8 +1143,6 @@ function renderCalendarHub() {
       renderCalendarHub();
     });
     const addCalendar = actionButton("Calendario +", () => addCalendarToMonth(month.id));
-    const upMonth = actionButton("Subir", () => moveMonth(month.id, -1));
-    const downMonth = actionButton("Bajar", () => moveMonth(month.id, 1));
     const removeMonth = actionButton("Eliminar mes", () => deleteMonth(month.id), "remove-template");
     const color = document.createElement("input");
     color.type = "color";
@@ -887,7 +1157,7 @@ function renderCalendarHub() {
     const monthStats = document.createElement("span");
     monthStats.className = "counter";
     monthStats.textContent = getMonthProgressText(month.id);
-    header.append(input, color, monthStats, addCalendar, upMonth, downMonth, removeMonth);
+    header.append(dragHandle, input, color, monthStats, addCalendar, removeMonth);
     card.style.borderColor = month.color || getPastelColor(month.order);
     card.style.background = `${month.color || getPastelColor(month.order)}33`;
     card.appendChild(header);
@@ -899,6 +1169,246 @@ function renderCalendarHub() {
 
     elements.hubCalendarAdminList.appendChild(card);
   });
+}
+
+function renderReviewDashboard() {
+  const pending = state.reviewQueue
+    .slice()
+    .sort((a, b) => new Date(a.readyAt) - new Date(b.readyAt));
+  elements.hubReviewList.replaceChildren();
+  elements.hubCompletionHistory.replaceChildren();
+  elements.hubReviewTotalCount.textContent = `${pending.length} ${pending.length === 1 ? "por revisar" : "por revisar"}`;
+  elements.hubReviewCount.textContent = String(pending.length);
+  elements.hubHistoryCount.textContent = String(state.completionHistory.length);
+
+  if (!pending.length) {
+    elements.hubReviewList.appendChild(emptyState("No hay tareas esperando cierre."));
+  } else {
+    const groups = new Map();
+    pending.forEach((item) => {
+      const key = item.assigneeId || "unassigned";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(item);
+    });
+
+    Array.from(groups.entries())
+      .sort(([a], [b]) => getReviewAssigneeName(a).localeCompare(getReviewAssigneeName(b), "es"))
+      .forEach(([assigneeId, items]) => {
+        const group = document.createElement("section");
+        group.className = "review-person-group";
+        const header = document.createElement("div");
+        header.className = "review-person-header";
+        const title = document.createElement("h3");
+        title.textContent = getReviewAssigneeName(assigneeId, items[0]);
+        const count = document.createElement("span");
+        count.className = "counter";
+        count.textContent = `${items.length} ${items.length === 1 ? "tarea" : "tareas"}`;
+        header.append(title, count);
+        const list = document.createElement("div");
+        list.className = "review-person-list";
+        items.forEach((item) => list.appendChild(createReviewDecisionCard(item)));
+        group.append(header, list);
+        elements.hubReviewList.appendChild(group);
+      });
+  }
+
+  renderCompletionHistory();
+}
+
+function getReviewAssigneeName(assigneeId, fallbackItem = null) {
+  if (assigneeId === "unassigned" || !assigneeId) return "Sin asignar";
+  return state.accounts.find((account) => account.id === assigneeId)?.name || fallbackItem?.assigneeName || "Colaborador eliminado";
+}
+
+function createReviewDecisionCard(item) {
+  const card = document.createElement("article");
+  card.className = "review-decision-card";
+  const body = document.createElement("div");
+  body.className = "review-decision-body";
+  const title = document.createElement("strong");
+  title.className = "task-title";
+  title.textContent = item.title;
+  const detail = document.createElement("p");
+  detail.className = "task-detail";
+  detail.textContent = item.detail || "Sin descripcion.";
+  const meta = document.createElement("div");
+  meta.className = "task-meta";
+  addPill(meta, item.type === "supertask" ? "Supertarea" : "Tarea", item.type === "supertask" ? "super" : "");
+  if (item.parentTitle) addPill(meta, `De: ${item.parentTitle}`, "super");
+  addPill(meta, item.sourceCalendarName || "Calendario eliminado");
+  if (Number.isInteger(item.sourceDayIndex)) addPill(meta, DAY_NAMES[item.sourceDayIndex]);
+  addPill(meta, `Lista ${formatDate(item.readyAt)}`, "done");
+  body.append(title, detail, meta);
+
+  const actions = document.createElement("div");
+  actions.className = "review-decision-actions";
+  const close = actionButton("Cerrar", () => closeReviewedTask(item.reviewEntryId), "primary-button review-close-action");
+  close.title = "Aprobar y enviar al historial finalizado";
+  const reject = actionButton("No cerrar", () => rejectReviewedTask(item.reviewEntryId), "review-return-action");
+  reject.title = "Devolver a su ubicacion anterior";
+  actions.append(close, reject);
+  card.append(body, actions);
+  return card;
+}
+
+function closeReviewedTask(reviewEntryId) {
+  if (!isCoordinator()) return;
+  const item = state.reviewQueue.find((candidate) => candidate.reviewEntryId === reviewEntryId);
+  if (!item) return;
+
+  const closedAt = new Date().toISOString();
+  const calendar = state.calendars.find((candidate) => candidate.id === item.sourceCalendarId);
+  const task = calendar?.tasks.find((candidate) => candidate.id === item.originalTaskId);
+  const parentId = task?.parentId || item.parentId || "";
+
+  state.completionHistory.push(normalizeCompletionHistoryItem({
+    ...item,
+    historyEntryId: createId(),
+    closedAt,
+    closedBy: getCurrentUser()?.name || "Coordinacion",
+    sourceCalendarName: calendar?.name || item.sourceCalendarName,
+  }));
+
+  if (calendar) {
+    calendar.tasks = calendar.tasks.filter((candidate) => candidate.id !== item.originalTaskId);
+    calendar.repository = calendar.repository.filter((candidate) =>
+      (candidate.originalTaskId || candidate.id) !== item.originalTaskId || candidate.repositoryStatus !== "completed"
+    );
+    closeParentSupertaskWhenComplete(calendar, parentId, closedAt);
+  }
+
+  state.reviewQueue = state.reviewQueue.filter((candidate) => candidate.reviewEntryId !== reviewEntryId);
+  saveState();
+  renderCalendarHub();
+  showSaveAnimation("Tarea cerrada");
+}
+
+function closeParentSupertaskWhenComplete(calendar, parentId, closedAt) {
+  if (!parentId) return;
+  const parent = calendar.tasks.find((task) => task.id === parentId && task.type === "supertask");
+  if (!parent) return;
+  const remainingChildren = calendar.tasks.filter((task) => task.parentId === parentId);
+  if (remainingChildren.length) return;
+
+  const alreadyArchived = state.completionHistory.some((item) =>
+    item.originalTaskId === parent.id && item.sourceCalendarId === calendar.id && item.type === "supertask"
+  );
+  if (!alreadyArchived) {
+    const month = state.months.find((item) => item.id === calendar.monthId);
+    state.completionHistory.push(normalizeCompletionHistoryItem({
+      ...parent,
+      historyEntryId: createId(),
+      originalTaskId: parent.id,
+      type: "supertask",
+      sourceCalendarId: calendar.id,
+      sourceMonthId: calendar.monthId,
+      sourceCalendarName: calendar.name,
+      sourceMonthName: month?.name || "",
+      assigneeName: "Equipo",
+      readyAt: closedAt,
+      closedAt,
+      closedBy: getCurrentUser()?.name || "Coordinacion",
+    }));
+  }
+  calendar.tasks = calendar.tasks.filter((task) => task.id !== parentId);
+}
+
+function rejectReviewedTask(reviewEntryId) {
+  if (!isCoordinator()) return;
+  const item = state.reviewQueue.find((candidate) => candidate.reviewEntryId === reviewEntryId);
+  if (!item) return;
+
+  const sourceCalendar = state.calendars.find((calendar) => calendar.id === item.sourceCalendarId);
+  const targetCalendar = sourceCalendar || getCurrentCalendar();
+  let task = sourceCalendar?.tasks.find((candidate) => candidate.id === item.originalTaskId);
+
+  if (!task) {
+    const parentExists = sourceCalendar?.tasks.some((candidate) => candidate.id === item.parentId);
+    task = createTask({
+      ...item,
+      id: sourceCalendar ? item.originalTaskId : createId(),
+      type: sourceCalendar ? item.type : "task",
+      parentId: sourceCalendar && parentExists ? item.parentId : "",
+      generatedBy: sourceCalendar && parentExists ? item.generatedBy : "",
+      completed: false,
+      completedAt: "",
+      completedDayIndex: null,
+      preferredDayIndex: sourceCalendar && Number.isInteger(item.sourceDayIndex) ? item.sourceDayIndex : null,
+      queueOnly: !sourceCalendar,
+    });
+    targetCalendar.tasks.push(task);
+  } else {
+    task.completed = false;
+    task.completedAt = "";
+    task.completedDayIndex = null;
+    task.preferredDayIndex = Number.isInteger(item.sourceDayIndex) ? item.sourceDayIndex : task.preferredDayIndex;
+    task.queueOnly = false;
+  }
+
+  state.calendars.forEach((calendar) => {
+    calendar.repository = calendar.repository.filter((candidate) =>
+      (candidate.originalTaskId || candidate.id) !== item.originalTaskId || candidate.repositoryStatus !== "completed"
+    );
+  });
+  state.reviewQueue = state.reviewQueue.filter((candidate) => candidate.reviewEntryId !== reviewEntryId);
+  saveState();
+  renderCalendarHub();
+  showSaveAnimation(sourceCalendar ? "Tarea devuelta al calendario" : "Tarea devuelta a la cola actual");
+}
+
+function renderCompletionHistory() {
+  if (!state.completionHistory.length) {
+    elements.hubCompletionHistory.appendChild(emptyState("Todavia no hay cierres definitivos."));
+    return;
+  }
+
+  const groups = new Map();
+  state.completionHistory
+    .slice()
+    .sort((a, b) => new Date(b.closedAt) - new Date(a.closedAt))
+    .forEach((item) => {
+      const date = new Date(item.closedAt);
+      const year = Number.isNaN(date.getTime()) ? "Sin fecha" : String(date.getFullYear());
+      const month = Number.isNaN(date.getTime())
+        ? "Sin mes"
+        : new Intl.DateTimeFormat("es-CL", { month: "long" }).format(date);
+      const key = `${year}:${month}`;
+      if (!groups.has(key)) groups.set(key, { year, month, items: [] });
+      groups.get(key).items.push(item);
+    });
+
+  groups.forEach((group) => {
+    const section = document.createElement("details");
+    section.className = "history-period";
+    section.open = true;
+    const summary = document.createElement("summary");
+    summary.textContent = `${capitalize(group.month)} ${group.year} (${group.items.length})`;
+    const list = document.createElement("div");
+    list.className = "history-period-list";
+    group.items.forEach((item) => list.appendChild(createHistoryCard(item)));
+    section.append(summary, list);
+    elements.hubCompletionHistory.appendChild(section);
+  });
+}
+
+function createHistoryCard(item) {
+  const card = document.createElement("article");
+  card.className = "history-task-card";
+  const title = document.createElement("strong");
+  title.textContent = item.title;
+  const context = document.createElement("span");
+  context.textContent = [
+    item.assigneeName || "Sin asignar",
+    item.parentTitle ? `De: ${item.parentTitle}` : TYPE_LABELS[item.type] || "Tarea",
+    item.sourceCalendarName,
+    formatDate(item.closedAt),
+  ].filter(Boolean).join(" · ");
+  card.append(title, context);
+  return card;
+}
+
+function capitalize(value) {
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
 }
 
 function renderAccessRequests() {
@@ -928,6 +1438,11 @@ function renderAccessRequests() {
 
 function renderHubSavedSupertasks() {
   const currentCalendar = getCurrentCalendar();
+  if (!currentCalendar) {
+    elements.hubSavedSupertaskCount.textContent = "0 guardadas";
+    elements.hubSavedSupertaskList.replaceChildren(emptyState("Crea el primer mes para comenzar a guardar supertareas."));
+    return;
+  }
   normalizeSavedTemplatesInCalendar(currentCalendar);
   const supertasks = currentCalendar.savedTasks.filter(isSupertaskTemplate);
   elements.hubSavedSupertaskCount.textContent = `${supertasks.length} guardadas`;
@@ -1001,13 +1516,32 @@ function createCalendarRow(calendar) {
       event.preventDefault();
       return;
     }
-    event.dataTransfer.setData("text/plain", calendar.id);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", `calendar:${calendar.id}`);
+    row.classList.add("is-dragging");
   });
-  row.addEventListener("dragover", (event) => event.preventDefault());
+  row.addEventListener("dragend", clearHubDragClasses);
+  row.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "move";
+    row.classList.add("drag-over");
+  });
+  row.addEventListener("dragleave", (event) => {
+    if (!(event.relatedTarget instanceof Node) || !row.contains(event.relatedTarget)) row.classList.remove("drag-over");
+  });
   row.addEventListener("drop", (event) => {
     event.preventDefault();
-    reorderCalendarByDrop(event.dataTransfer.getData("text/plain"), calendar.id);
+    event.stopPropagation();
+    const payload = event.dataTransfer.getData("text/plain");
+    if (payload.startsWith("calendar:")) reorderCalendarByDrop(payload.slice(9), calendar.id);
+    clearHubDragClasses();
   });
+  const dragHandle = document.createElement("span");
+  dragHandle.className = "drag-handle calendar-drag-handle";
+  dragHandle.textContent = "⋮⋮";
+  dragHandle.title = "Arrastrar calendario para cambiar su posicion o mes";
+  dragHandle.addEventListener("pointerdown", (event) => startHubPointerDrag(event, "calendar", calendar.id, row));
   const title = document.createElement("input");
   title.className = "calendar-name-input";
   title.value = calendar.name;
@@ -1027,8 +1561,69 @@ function createCalendarRow(calendar) {
   const current = actionButton("Actual", () => setCurrentCalendar(calendar.id));
   const summary = actionButton("Resumen", () => downloadCalendarSummaryExcel(calendar.id));
   const remove = actionButton("Eliminar", () => deleteCalendar(calendar.id), "remove-template");
-  row.append(title, progress, select, current, summary, remove);
+  row.append(dragHandle, title, progress, select, current, summary, remove);
   return row;
+}
+
+function clearHubDragClasses() {
+  document.querySelectorAll(".month-card.is-dragging, .month-card.drag-over, .calendar-row.is-dragging, .calendar-row.drag-over")
+    .forEach((element) => element.classList.remove("is-dragging", "drag-over"));
+}
+
+function startHubPointerDrag(event, type, id, element) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  hubPointerDrag = { type, id, element, pointerId: event.pointerId };
+  element.classList.add("is-dragging");
+  event.currentTarget.setPointerCapture?.(event.pointerId);
+  document.addEventListener("pointermove", handleHubPointerMove);
+  document.addEventListener("pointerup", finishHubPointerDrag, { once: true });
+  document.addEventListener("pointercancel", cancelHubPointerDrag, { once: true });
+}
+
+function handleHubPointerMove(event) {
+  if (!hubPointerDrag || event.pointerId !== hubPointerDrag.pointerId) return;
+  document.querySelectorAll(".month-card.drag-over, .calendar-row.drag-over")
+    .forEach((element) => element.classList.remove("drag-over"));
+  const pointedElement = document.elementFromPoint(event.clientX, event.clientY);
+  if (!(pointedElement instanceof Element)) return;
+  if (hubPointerDrag.type === "calendar") {
+    const row = pointedElement.closest(".calendar-row");
+    if (row && row.dataset.calendarId !== hubPointerDrag.id) {
+      row.classList.add("drag-over");
+      return;
+    }
+  }
+  const monthCard = pointedElement.closest(".month-card");
+  if (monthCard && monthCard.dataset.monthId !== hubPointerDrag.id) monthCard.classList.add("drag-over");
+}
+
+function finishHubPointerDrag(event) {
+  if (!hubPointerDrag || event.pointerId !== hubPointerDrag.pointerId) return;
+  const drag = hubPointerDrag;
+  const pointedElement = document.elementFromPoint(event.clientX, event.clientY);
+  hubPointerDrag = null;
+  document.removeEventListener("pointermove", handleHubPointerMove);
+  document.removeEventListener("pointercancel", cancelHubPointerDrag);
+  if (pointedElement instanceof Element) {
+    const targetRow = pointedElement.closest(".calendar-row");
+    const targetMonth = pointedElement.closest(".month-card");
+    if (drag.type === "calendar" && targetRow?.dataset.calendarId) {
+      reorderCalendarByDrop(drag.id, targetRow.dataset.calendarId);
+    } else if (drag.type === "calendar" && targetMonth?.dataset.monthId) {
+      moveCalendarToMonthEnd(drag.id, targetMonth.dataset.monthId);
+    } else if (drag.type === "month" && targetMonth?.dataset.monthId) {
+      reorderMonthByDrop(drag.id, targetMonth.dataset.monthId);
+    }
+  }
+  clearHubDragClasses();
+}
+
+function cancelHubPointerDrag() {
+  hubPointerDrag = null;
+  document.removeEventListener("pointermove", handleHubPointerMove);
+  clearHubDragClasses();
 }
 
 function getCalendarProgress(calendar) {
@@ -1354,15 +1949,66 @@ function reorderCalendarByDrop(sourceId, targetId) {
   if (!sourceId || sourceId === targetId) return;
   const source = state.calendars.find((calendar) => calendar.id === sourceId);
   const target = state.calendars.find((calendar) => calendar.id === targetId);
-  if (!source || !target || source.monthId !== target.monthId) return;
+  if (!source || !target) return;
+  const originalMonthId = source.monthId;
+  const targetCalendars = state.calendars.filter((calendar) => calendar.monthId === target.monthId);
+  if (originalMonthId !== target.monthId && targetCalendars.length >= 4) {
+    alert("Cada mes puede integrar un maximo de 4 calendarios.");
+    return;
+  }
+  source.monthId = target.monthId;
   const siblings = state.calendars
-    .filter((calendar) => calendar.monthId === source.monthId)
+    .filter((calendar) => calendar.monthId === target.monthId)
     .sort((a, b) => a.order - b.order);
   const withoutSource = siblings.filter((calendar) => calendar.id !== sourceId);
   const targetIndex = withoutSource.findIndex((calendar) => calendar.id === targetId);
-  withoutSource.splice(targetIndex, 0, source);
+  withoutSource.splice(targetIndex < 0 ? withoutSource.length : targetIndex, 0, source);
   withoutSource.forEach((calendar, index) => {
     calendar.order = index;
+  });
+  normalizeCalendarOrder(originalMonthId);
+  saveState();
+  renderCalendarHub();
+}
+
+function moveCalendarToMonthEnd(calendarId, monthId) {
+  const calendar = state.calendars.find((item) => item.id === calendarId);
+  if (!calendar || calendar.monthId === monthId) return;
+  const targetCalendars = state.calendars
+    .filter((item) => item.monthId === monthId)
+    .sort((a, b) => a.order - b.order);
+  if (targetCalendars.length >= 4) {
+    alert("Cada mes puede integrar un maximo de 4 calendarios.");
+    return;
+  }
+  const originalMonthId = calendar.monthId;
+  calendar.monthId = monthId;
+  calendar.order = targetCalendars.length;
+  normalizeCalendarOrder(originalMonthId);
+  normalizeCalendarOrder(monthId);
+  saveState();
+  renderCalendarHub();
+}
+
+function normalizeCalendarOrder(monthId) {
+  state.calendars
+    .filter((calendar) => calendar.monthId === monthId)
+    .sort((a, b) => a.order - b.order)
+    .forEach((calendar, index) => {
+      calendar.order = index;
+    });
+}
+
+function reorderMonthByDrop(sourceId, targetId) {
+  if (!sourceId || sourceId === targetId) return;
+  const ordered = state.months.slice().sort((a, b) => a.order - b.order);
+  const source = ordered.find((month) => month.id === sourceId);
+  if (!source || !ordered.some((month) => month.id === targetId)) return;
+  const withoutSource = ordered.filter((month) => month.id !== sourceId);
+  const targetIndex = withoutSource.findIndex((month) => month.id === targetId);
+  withoutSource.splice(targetIndex < 0 ? withoutSource.length : targetIndex, 0, source);
+  withoutSource.forEach((month, index) => {
+    month.order = index;
   });
   saveState();
   renderCalendarHub();
@@ -1452,10 +2098,17 @@ function moveMonth(monthId, direction) {
 
 function createMonthFromInput(input, renderAppAfter = false) {
   if (!isCoordinator()) return;
-  const name = input.value.trim() || `Mes ${state.months.length + 1}`;
+  const name = input.value.trim();
+  if (!name) {
+    input.focus();
+    return;
+  }
   const month = { id: createId(), name, order: state.months.length, color: getPastelColor(state.months.length) };
   state.months.push(month);
-  state.calendars.push(createCalendar({ name: "Calendario 1", monthId: month.id, order: 0 }));
+  const isFirstCalendar = state.calendars.length === 0;
+  const calendar = createCalendar({ name: "Calendario 1", monthId: month.id, order: 0, isCurrent: isFirstCalendar });
+  state.calendars.push(calendar);
+  if (isFirstCalendar) state.activeCalendarId = calendar.id;
   input.value = "";
   saveState();
   if (renderAppAfter) {
@@ -1525,6 +2178,7 @@ function getTaskAssigneeFromRole(formData) {
 function getAccessStatusText(account) {
   if (account.status === "pending") return "pendiente";
   if (account.status === "rejected") return "rechazado";
+  if (cloudReady) return "activo";
   if (!account.password) return "sin clave";
   return "activo";
 }
@@ -1546,21 +2200,20 @@ function setPersonPassword(personId) {
   }
 }
 
-function changeCurrentPassword() {
+async function changeCurrentPassword() {
   const user = getCurrentUser();
   if (!user || user.role !== "collaborator") return;
-  const currentPassword = prompt("Ingresa tu clave actual");
-  if (currentPassword === null) return;
-  if (user.password && currentPassword !== user.password) {
-    alert("La clave actual no coincide.");
+  const newPassword = prompt("Ingresa tu nueva clave");
+  if (!newPassword || newPassword.trim().length < 8) {
+    if (newPassword !== null) alert("La nueva clave debe tener al menos 8 caracteres.");
     return;
   }
-  const newPassword = prompt("Ingresa tu nueva clave");
-  if (!newPassword || !newPassword.trim()) return;
-  user.password = newPassword.trim();
-  user.status = "active";
-  saveState();
-  alert("Clave actualizada.");
+  try {
+    await window.CloudStore.updatePassword(newPassword.trim());
+    alert("Clave actualizada.");
+  } catch (error) {
+    alert(getCloudErrorMessage(error, "No fue posible actualizar la clave."));
+  }
 }
 
 function resetResetButton() {
@@ -1568,6 +2221,89 @@ function resetResetButton() {
   resetConfirmTimer = null;
   elements.resetButton.classList.remove("confirming");
   elements.resetButton.textContent = "Limpiar";
+}
+
+function openGlobalCleanupDialog() {
+  if (!isCoordinator()) return;
+  if (elements.globalCleanupDialog.open) return;
+  resetGlobalCleanupDialog();
+  elements.globalCleanupDialog.showModal();
+}
+
+function activateGlobalCleanupButton() {
+  if (!isCoordinator()) return;
+  elements.globalCleanupButton.classList.add("is-expanded");
+  window.clearTimeout(globalCleanupOpenTimer);
+  globalCleanupOpenTimer = window.setTimeout(() => {
+    globalCleanupOpenTimer = null;
+    openGlobalCleanupDialog();
+  }, 420);
+}
+
+function showGlobalCleanupWarning() {
+  globalCleanupStepAuthorized = false;
+  elements.globalCleanupStepOne.classList.remove("hidden");
+  elements.globalCleanupStepTwo.classList.add("hidden");
+  elements.globalCleanupError.textContent = "";
+}
+
+function showGlobalCleanupAuthorization() {
+  globalCleanupStepAuthorized = true;
+  elements.globalCleanupStepOne.classList.add("hidden");
+  elements.globalCleanupStepTwo.classList.remove("hidden");
+  elements.globalCleanupPassword.focus();
+  updateGlobalCleanupSubmitState();
+}
+
+function updateGlobalCleanupSubmitState() {
+  elements.globalCleanupSubmit.disabled = !elements.globalCleanupConfirm.checked || !elements.globalCleanupPassword.value;
+}
+
+function resetGlobalCleanupDialog() {
+  elements.globalCleanupForm.reset();
+  elements.globalCleanupError.textContent = "";
+  elements.globalCleanupSubmit.disabled = true;
+  showGlobalCleanupWarning();
+}
+
+async function performGlobalCleanup() {
+  const coordinator = getCurrentUser();
+  if (!isCoordinator(coordinator)) return;
+  if (!globalCleanupStepAuthorized) {
+    showGlobalCleanupWarning();
+    return;
+  }
+  if (!elements.globalCleanupConfirm.checked) {
+    elements.globalCleanupError.textContent = "Debes marcar la casilla de confirmacion final.";
+    return;
+  }
+  elements.globalCleanupSubmit.disabled = true;
+  const validPassword = cloudReady
+    ? await window.CloudStore.verifyPassword(elements.globalCleanupPassword.value)
+    : elements.globalCleanupPassword.value === coordinator.password;
+  if (!validPassword) {
+    elements.globalCleanupError.textContent = "La clave del coordinador no coincide.";
+    elements.globalCleanupPassword.select();
+    updateGlobalCleanupSubmitState();
+    return;
+  }
+
+  state.accounts = state.accounts.filter((account) => account.role === "coordinator");
+  state.months = [];
+  state.calendars = [];
+  state.activeCalendarId = "";
+  state.reviewQueue = [];
+  state.completionHistory = [];
+
+  restoringUndo = true;
+  undoStack.length = 0;
+  saveState();
+  undoStack.length = 0;
+  restoringUndo = false;
+  elements.globalCleanupDialog.close();
+  renderSubtaskRows(elements.subtaskRows, []);
+  renderCalendarHub();
+  showSaveAnimation("Limpieza general completada");
 }
 
 function renderPeople() {
@@ -1592,8 +2328,8 @@ function renderPeople() {
       count.textContent = `Coordinador - ${getAccessStatusText(person)}`;
     } else {
       const active = state.tasks.filter((task) => task.assigneeId === person.id && !task.completed).length;
-      const done = state.tasks.filter((task) => task.assigneeId === person.id && task.completed).length;
-      count.textContent = `${active} pendientes / ${done} listas - ${getAccessStatusText(person)}`;
+      const ready = state.tasks.filter((task) => task.assigneeId === person.id && task.completed).length;
+      count.textContent = `${active} pendientes / ${ready} en revision - ${getAccessStatusText(person)}`;
     }
 
     const password = document.createElement("button");
@@ -1608,7 +2344,9 @@ function renderPeople() {
     remove.textContent = "Eliminar";
     remove.addEventListener("click", () => removePerson(person.id));
 
-    row.append(name, count, password, remove);
+    row.append(name, count);
+    if (!cloudReady) row.append(password);
+    row.append(remove);
     elements.peopleList.appendChild(row);
   }
 }
@@ -1639,7 +2377,7 @@ function renderBoard() {
     const stats = getPersonStats(person.id);
     const subtitle = document.createElement("p");
     subtitle.className = "person-progress";
-    subtitle.textContent = `${stats.percent}% listas - ${stats.completed} completadas - ${stats.pending} no completadas`;
+    subtitle.textContent = `${stats.percent}% listas para revision - ${stats.completed} listas - ${stats.pending} pendientes`;
     titleWrap.append(title, subtitle);
 
     const capacity = document.createElement("span");
@@ -1677,7 +2415,7 @@ function renderBoard() {
       const capacity = getDayCapacity(person.id, dayIndex);
       const dayHeader = document.createElement("div");
       dayHeader.className = "day-header";
-      dayHeader.innerHTML = `<span>${dayName}</span><span>${pending.length + completed.length}/${capacity} - ${completed.length} listas</span>`;
+      dayHeader.innerHTML = `<span>${dayName}</span><span>${pending.length + completed.length}/${capacity} - ${completed.length} en revision</span>`;
 
       const list = document.createElement("div");
       list.className = "day-list";
@@ -1686,7 +2424,7 @@ function renderBoard() {
         list.appendChild(emptyState("Sin tareas"));
       } else {
         appendDayGroup(list, "Pendientes", pending, "scheduled", dayIndex);
-        appendDayGroup(list, "Listas", completed, "completed", dayIndex);
+        appendDayGroup(list, "Listas para revision", completed, "completed", dayIndex);
       }
 
       const extraButton = document.createElement("button");
@@ -1756,6 +2494,7 @@ function moveTaskToDay(taskId, personId, dayIndex) {
   }
 
   task.preferredDayIndex = dayIndex;
+  task.queueOnly = false;
   updateParentSubtaskFromTask(task);
   saveAndRender();
 }
@@ -2152,6 +2891,10 @@ function buildSchedule() {
       .sort(sortTasks);
 
     activeTasks.forEach((task) => {
+      if (task.queueOnly) {
+        overflow.push(task);
+        return;
+      }
       const dayIndex = findPlacementDay(byPerson[person.id], person.id, task);
       if (dayIndex === -1) {
         overflow.push(task);
@@ -2536,7 +3279,26 @@ function markTaskCompleted(taskId, dayIndex = null) {
   task.completed = true;
   task.completedAt = now;
   task.completedDayIndex = Number.isInteger(dayIndex) ? dayIndex : getWeekdayIndex(now);
-  addToRepository(task, "completed", now);
+  const calendar = state.calendars.find((item) => item.tasks.some((candidate) => candidate.id === task.id)) || getActiveCalendar();
+  const alreadyQueued = state.reviewQueue.some((item) => item.sourceCalendarId === calendar.id && item.originalTaskId === task.id);
+  if (!alreadyQueued) state.reviewQueue.push(createReviewSnapshot(task, calendar, now));
+}
+
+function createReviewSnapshot(task, calendar, readyAt) {
+  const month = state.months.find((item) => item.id === calendar?.monthId);
+  return normalizeReviewItem({
+    ...task,
+    reviewEntryId: createId(),
+    originalTaskId: task.id,
+    sourceCalendarId: calendar?.id || "",
+    sourceMonthId: calendar?.monthId || "",
+    sourceCalendarName: calendar?.name || "Calendario eliminado",
+    sourceMonthName: month?.name || "Mes eliminado",
+    sourceDayIndex: Number.isInteger(task.completedDayIndex) ? task.completedDayIndex : task.preferredDayIndex,
+    readyAt,
+    assigneeName: getPersonName(task.assigneeId),
+    parentTitle: task.parentId ? getParentTitle(task.parentId) : "",
+  }, state.calendars, state.months);
 }
 
 function removeTask(taskId) {
@@ -2575,7 +3337,7 @@ function addToRepository(task, status, date) {
   state.repository.push(snapshot);
 }
 
-function removePerson(personId) {
+async function removePerson(personId) {
   const person = state.accounts.find((item) => item.id === personId);
   if (!person) return;
   if (person.id === getCurrentUser()?.id) {
@@ -2588,6 +3350,14 @@ function removePerson(personId) {
   }
   if (!confirm(`Deseas eliminar el perfil de ${person.name}? Sus tareas quedaran sin asignar.`)) return;
 
+  if (cloudReady) {
+    try {
+      await window.CloudStore.deleteMember(personId);
+    } catch (error) {
+      alert(getCloudErrorMessage(error, "No fue posible eliminar el perfil."));
+      return;
+    }
+  }
   state.accounts = state.accounts.filter((item) => item.id !== personId);
   delete state.extraSlots[personId];
   state.tasks = state.tasks.map((task) =>
@@ -2862,6 +3632,23 @@ function saveState() {
   }
   localStorage.setItem(STORAGE_KEY, snapshot);
   lastSavedSnapshot = snapshot;
+  if (cloudReady && !cloudHydrating) {
+    window.clearTimeout(cloudSaveTimer);
+    cloudSaveTimer = window.setTimeout(syncStateToCloud, 300);
+  }
+}
+
+async function syncStateToCloud() {
+  if (!cloudReady || cloudHydrating || cloudSyncing) return;
+  cloudSyncing = true;
+  try {
+    await window.CloudStore.saveState(JSON.parse(serializeState()), getCurrentUser()?.id || "");
+  } catch (error) {
+    console.error("No se pudo guardar en el espacio compartido", error);
+    showSaveAnimation("Guardado local; reintentando conexión");
+  } finally {
+    window.setTimeout(() => { cloudSyncing = false; }, 500);
+  }
 }
 
 function serializeState() {
@@ -2870,6 +3657,8 @@ function serializeState() {
     months: state.months,
     calendars: state.calendars,
     activeCalendarId: state.activeCalendarId,
+    reviewQueue: state.reviewQueue,
+    completionHistory: state.completionHistory,
   });
 }
 
@@ -2883,6 +3672,8 @@ function undoLastChange() {
     state.months = restoredState.months;
     state.calendars = restoredState.calendars;
     state.activeCalendarId = restoredState.activeCalendarId;
+    state.reviewQueue = restoredState.reviewQueue;
+    state.completionHistory = restoredState.completionHistory;
     saveState();
     restoringUndo = false;
     render();
@@ -2911,23 +3702,31 @@ function loadState() {
 }
 
 function getEmptyState() {
-  const month = { id: createId(), name: "Mes inicial", order: 0, color: getPastelColor(0) };
-  const calendar = createCalendar({
-    name: "Calendario actual",
-    monthId: month.id,
-    order: 0,
-    isCurrent: true,
-    tasks: [],
-    savedTasks: [],
-    repository: [],
-    extraSlots: {},
-  });
   return {
     accounts: [],
-    months: [month],
-    calendars: [calendar],
-    activeCalendarId: calendar.id,
+    months: [],
+    calendars: [],
+    activeCalendarId: "",
+    reviewQueue: [],
+    completionHistory: [],
   };
+}
+
+function isUntouchedInitialStructure(months, calendars, rawState) {
+  if (months.length !== 1 || calendars.length !== 1) return false;
+  const month = months[0];
+  const calendar = calendars[0];
+  const defaultMonthNames = new Set(["Mes inicial", "Mes actual"]);
+  const hasExtraSlots = Object.values(calendar.extraSlots || {}).some((slots) =>
+    Array.isArray(slots) && slots.some((value) => Number(value) > 0));
+  return defaultMonthNames.has(month.name)
+    && calendar.name === "Calendario actual"
+    && calendar.tasks.length === 0
+    && calendar.savedTasks.length === 0
+    && calendar.repository.length === 0
+    && !hasExtraSlots
+    && (!Array.isArray(rawState.reviewQueue) || rawState.reviewQueue.length === 0)
+    && (!Array.isArray(rawState.completionHistory) || rawState.completionHistory.length === 0);
 }
 
 function normalizeState(rawState) {
@@ -2941,33 +3740,143 @@ function normalizeState(rawState) {
         role: "collaborator",
         status: "active",
       }));
-  const months = Array.isArray(rawState.months) && rawState.months.length
+  let months = Array.isArray(rawState.months)
     ? rawState.months.map((month, index) => ({
         id: month.id || createId(),
         name: month.name || `Mes ${index + 1}`,
         order: Number.isInteger(month.order) ? month.order : index,
         color: month.color || getPastelColor(index),
       }))
-    : [{ id: createId(), name: "Mes actual", order: 0, color: getPastelColor(0) }];
-  const calendars = Array.isArray(rawState.calendars) && rawState.calendars.length
-    ? rawState.calendars.map((calendar) => normalizeCalendar(calendar, months[0].id, accounts))
-    : [
-        normalizeCalendar({
-          name: "Calendario actual",
-          monthId: months[0].id,
-          order: 0,
-          isCurrent: true,
-          tasks: Array.isArray(rawState.tasks) ? rawState.tasks : [],
-          savedTasks: Array.isArray(rawState.savedTasks) ? rawState.savedTasks : [],
-          repository: Array.isArray(rawState.repository) ? rawState.repository : [],
-          extraSlots: rawState.extraSlots || {},
-        }, months[0].id, accounts),
-      ];
+    : [];
+  let calendars = Array.isArray(rawState.calendars)
+    ? rawState.calendars.map((calendar) => normalizeCalendar(calendar, months[0]?.id || "", accounts))
+    : [];
+
+  const hasLegacyCalendarContent = [rawState.tasks, rawState.savedTasks, rawState.repository]
+    .some((items) => Array.isArray(items) && items.length > 0)
+    || Object.values(rawState.extraSlots || {}).some((slots) => Array.isArray(slots) && slots.some((value) => Number(value) > 0));
+  if (!Array.isArray(rawState.calendars) && hasLegacyCalendarContent) {
+    if (!months.length) {
+      months = [{ id: createId(), name: "Mes actual", order: 0, color: getPastelColor(0) }];
+    }
+    calendars = [normalizeCalendar({
+      name: "Calendario actual",
+      monthId: months[0].id,
+      order: 0,
+      isCurrent: true,
+      tasks: Array.isArray(rawState.tasks) ? rawState.tasks : [],
+      savedTasks: Array.isArray(rawState.savedTasks) ? rawState.savedTasks : [],
+      repository: Array.isArray(rawState.repository) ? rawState.repository : [],
+      extraSlots: rawState.extraSlots || {},
+    }, months[0].id, accounts)];
+  }
+
+  if (isUntouchedInitialStructure(months, calendars, rawState)) {
+    months = [];
+    calendars = [];
+  }
+  const reviewQueue = normalizeReviewQueue(rawState.reviewQueue, calendars, months);
+  const completionHistory = Array.isArray(rawState.completionHistory)
+    ? rawState.completionHistory.map(normalizeCompletionHistoryItem)
+    : [];
   return {
     accounts,
     months,
     calendars,
-    activeCalendarId: rawState.activeCalendarId || calendars.find((calendar) => calendar.isCurrent)?.id || calendars[0].id,
+    activeCalendarId: calendars.some((calendar) => calendar.id === rawState.activeCalendarId)
+      ? rawState.activeCalendarId
+      : calendars.find((calendar) => calendar.isCurrent)?.id || calendars[0]?.id || "",
+    reviewQueue,
+    completionHistory,
+  };
+}
+
+function normalizeReviewQueue(rawQueue, calendars, months) {
+  const source = Array.isArray(rawQueue) ? rawQueue : [];
+  const normalized = source.map((item) => normalizeReviewItem(item, calendars, months));
+  const known = new Set(normalized.map((item) => `${item.sourceCalendarId}:${item.originalTaskId}`));
+
+  calendars.forEach((calendar) => {
+    calendar.tasks
+      .filter((task) => task.completed && task.type !== "supertask")
+      .forEach((task) => {
+        const key = `${calendar.id}:${task.id}`;
+        if (known.has(key)) return;
+        const month = months.find((candidate) => candidate.id === calendar.monthId);
+        normalized.push(normalizeReviewItem({
+          ...task,
+          reviewEntryId: createId(),
+          originalTaskId: task.id,
+          sourceCalendarId: calendar.id,
+          sourceMonthId: calendar.monthId,
+          sourceCalendarName: calendar.name,
+          sourceMonthName: month?.name || "",
+          sourceDayIndex: Number.isInteger(task.completedDayIndex) ? task.completedDayIndex : task.preferredDayIndex,
+          readyAt: task.completedAt || new Date().toISOString(),
+          assigneeName: "",
+          parentTitle: calendar.tasks.find((candidate) => candidate.id === task.parentId)?.title || "",
+        }, calendars, months));
+        known.add(key);
+      });
+
+    calendar.repository
+      .filter((item) => item.repositoryStatus === "completed")
+      .forEach((item) => {
+        const originalTaskId = item.originalTaskId || item.id;
+        const key = `${calendar.id}:${originalTaskId}`;
+        if (known.has(key)) return;
+        normalized.push(normalizeReviewItem({
+          ...item,
+          reviewEntryId: item.reviewEntryId || item.repositoryEntryId,
+          originalTaskId,
+          sourceCalendarId: calendar.id,
+          sourceMonthId: calendar.monthId,
+          sourceCalendarName: calendar.name,
+          sourceMonthName: months.find((month) => month.id === calendar.monthId)?.name || "",
+          sourceDayIndex: Number.isInteger(item.completedDayIndex) ? item.completedDayIndex : item.preferredDayIndex,
+          readyAt: item.completedAt || item.repositoryAt,
+        }, calendars, months));
+        known.add(key);
+      });
+  });
+
+  return normalized;
+}
+
+function normalizeReviewItem(item, calendars = state?.calendars || [], months = state?.months || []) {
+  const calendar = calendars.find((candidate) => candidate.id === item.sourceCalendarId);
+  const month = months.find((candidate) => candidate.id === (item.sourceMonthId || calendar?.monthId));
+  const task = createTask({
+    ...item,
+    id: item.originalTaskId || item.id,
+    completed: true,
+    completedAt: item.readyAt || item.completedAt || new Date().toISOString(),
+  });
+  return {
+    ...task,
+    reviewEntryId: item.reviewEntryId || item.repositoryEntryId || createId(),
+    originalTaskId: item.originalTaskId || item.id || task.id,
+    sourceCalendarId: item.sourceCalendarId || calendar?.id || "",
+    sourceMonthId: item.sourceMonthId || calendar?.monthId || "",
+    sourceCalendarName: item.sourceCalendarName || calendar?.name || "Calendario eliminado",
+    sourceMonthName: item.sourceMonthName || month?.name || "Mes eliminado",
+    sourceDayIndex: Number.isInteger(item.sourceDayIndex)
+      ? item.sourceDayIndex
+      : Number.isInteger(item.completedDayIndex)
+        ? item.completedDayIndex
+        : item.preferredDayIndex,
+    readyAt: item.readyAt || item.completedAt || item.repositoryAt || new Date().toISOString(),
+    assigneeName: item.assigneeName || "",
+    parentTitle: item.parentTitle || "",
+  };
+}
+
+function normalizeCompletionHistoryItem(item) {
+  return {
+    ...normalizeReviewItem(item, [], []),
+    historyEntryId: item.historyEntryId || createId(),
+    closedAt: item.closedAt || item.readyAt || new Date().toISOString(),
+    closedBy: item.closedBy || "Coordinacion",
   };
 }
 
