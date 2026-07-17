@@ -491,6 +491,43 @@ function createAccessMessageCard(title, message, allowLogout = false) {
   return card;
 }
 
+function createEmailConfirmationCard(email) {
+  const card = document.createElement("div");
+  card.className = "access-card confirmation-card";
+  card.innerHTML = `
+    <div class="access-hero">
+      <div class="confirmation-icon" aria-hidden="true">✓</div>
+      <p class="eyebrow">Cuenta creada</p>
+      <h1>Confirma tu correo</h1>
+      <p class="access-copy">Enviamos un enlace seguro a <strong>${escapeHtml(email)}</strong>. Ábrelo y volverás automáticamente a esta aplicación.</p>
+    </div>
+    <div class="confirmation-actions">
+      <button class="primary-button" id="confirmationLogin" type="button">Ya confirmé, iniciar sesión</button>
+      <button class="ghost-button" id="resendConfirmation" type="button">Reenviar correo</button>
+    </div>
+    <p class="access-notice success" id="confirmationMessage" role="status" aria-live="polite">El correo fue enviado correctamente.</p>
+  `;
+  card.querySelector("#confirmationLogin").addEventListener("click", renderAccessGate);
+  card.querySelector("#resendConfirmation").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const message = card.querySelector("#confirmationMessage");
+    button.disabled = true;
+    button.textContent = "Reenviando...";
+    try {
+      await window.CloudStore.resendSignup(email);
+      message.className = "access-notice success";
+      message.textContent = "Nuevo correo enviado. Usa el enlace más reciente.";
+    } catch (error) {
+      message.className = "access-notice error";
+      message.textContent = getCloudErrorMessage(error, "No fue posible reenviar el correo.");
+    } finally {
+      button.disabled = false;
+      button.textContent = "Reenviar correo";
+    }
+  });
+  return card;
+}
+
 async function initializeApplication() {
   elements.appShell.classList.add("hidden");
   elements.calendarHubShell.classList.add("hidden");
@@ -651,7 +688,7 @@ function createCoordinatorSetupCard() {
         </label>
         <button class="primary-button" type="submit">Crear cuenta</button>
         <button class="ghost-button" id="backToCloudLogin" type="button">Ya tengo una cuenta</button>
-        <p class="task-detail" id="setupError" role="alert"></p>
+        <p class="access-notice" id="setupError" role="alert" aria-live="assertive"></p>
       </form>
     </div>
   `;
@@ -664,19 +701,23 @@ function createCoordinatorSetupCard() {
     const errorNode = card.querySelector("#setupError");
     if (!name || !email || password.length < 8) return;
     const submit = card.querySelector("button[type='submit']");
+    const originalSubmitText = submit.textContent;
     submit.disabled = true;
-    errorNode.textContent = "Creando cuenta segura...";
+    submit.textContent = "Creando cuenta...";
+    errorNode.className = "access-notice pending";
+    errorNode.textContent = "Estamos creando el acceso seguro y enviando el correo de confirmación.";
     try {
       const result = await window.CloudStore.signUpCoordinator({ name, email, password });
       if (result.needsEmailConfirmation) {
-        errorNode.textContent = "Revisa tu correo y confirma la cuenta. Después vuelve aquí para iniciar sesión.";
-        submit.disabled = false;
+        elements.accessShell.replaceChildren(createEmailConfirmationCard(email));
         return;
       }
       await startCloudSession();
     } catch (error) {
+      errorNode.className = "access-notice error";
       errorNode.textContent = getCloudErrorMessage(error, "No fue posible crear la cuenta.");
       submit.disabled = false;
+      submit.textContent = originalSubmitText;
     }
   });
   return card;

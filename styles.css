@@ -2439,3 +2439,58 @@ textarea:focus-visible {
     grid-template-columns: 1fr 1fr;
   }
 }
+.access-notice {
+  min-height: 22px;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.access-notice:empty {
+  display: none;
+}
+
+.access-notice.pending {
+  color: #14532d;
+  background: rgba(220, 252, 231, 0.78);
+  border-color: rgba(34, 197, 94, 0.26);
+}
+
+.access-notice.success {
+  color: #14532d;
+  background: rgba(220, 252, 231, 0.88);
+  border-color: rgba(22, 163, 74, 0.3);
+}
+
+.access-notice.error {
+  color: #991b1b;
+  background: rgba(254, 226, 226, 0.9);
+  border-color: rgba(220, 38, 38, 0.28);
+}
+
+.confirmation-card {
+  text-align: center;
+}
+
+.confirmation-icon {
+  display: grid;
+  place-items: center;
+  width: 68px;
+  height: 68px;
+  margin: 0 auto 16px;
+  border-radius: 50%;
+  color: #ecfdf5;
+  background: linear-gradient(145deg, #16a34a, #047857);
+  box-shadow: 0 16px 34px rgba(5, 150, 105, 0.24);
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.confirmation-actions {
+  display: grid;
+  gap: 10px;
+  margin-top: 22px;
+}

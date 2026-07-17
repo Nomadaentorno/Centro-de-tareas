@@ -66,6 +66,15 @@
     return { session: data.session, needsEmailConfirmation: false };
   }
 
+  async function resendSignup(email) {
+    const { error } = await client.auth.resend({
+      type: "signup",
+      email: email.trim().toLowerCase(),
+      options: { emailRedirectTo: window.location.origin },
+    });
+    if (error) throw error;
+  }
+
   async function bootstrapWorkspace(coordinatorName) {
     const { data: existing, error: existingError } = await client.from("workspace_members").select("workspace_id").maybeSingle();
     if (existingError) throw existingError;
@@ -296,7 +305,7 @@
   }
 
   window.CloudStore = {
-    available: true, client, getSession, signIn, signUpCoordinator, bootstrapWorkspace, signOut,
+    available: true, client, getSession, signIn, signUpCoordinator, resendSignup, bootstrapWorkspace, signOut,
     loadWorkspace, saveState: (state, userId) => currentMembership?.role === "coordinator"
       ? saveCoordinatorState(state) : saveCollaboratorReadyTasks(state, userId),
     createMember, deleteMember, updatePassword, verifyPassword, subscribe, unsubscribe,
